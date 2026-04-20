@@ -25,9 +25,28 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await signIn("credentials", { email: email.trim().toLowerCase(), password, redirect: false });
-      if (response?.error) return setError("Invalid email or password");
-      router.push("/dashboard");
+      const response = await signIn("credentials", {
+        email: email.trim().toLowerCase(),
+        password,
+        redirect: false,
+        callbackUrl: "/dashboard",
+      });
+
+      if (!response) {
+        setError("Unable to login. Please check your internet connection and try again.");
+        return;
+      }
+      if (response.error) {
+        setError("Invalid email or password");
+        return;
+      }
+      if (!response.ok) {
+        setError("Login failed. Please try again.");
+        return;
+      }
+
+      router.replace(response.url ?? "/dashboard");
+      router.refresh();
     } catch {
       setError("Login failed. Please try again.");
     } finally {
