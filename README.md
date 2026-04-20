@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FitnessHood — Gym PC Install (Best Option)
 
-## Getting Started
+This app is designed to run on a **single gym computer** as a local website:
 
-First, run the development server:
+- Open in a browser at `http://localhost:3000`
+- No “hosting” needed for daily use
+- Best for a front-desk scan station + admin dashboard in one tab
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Requirements (Gym PC)
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Windows 10/11**
+- **Node.js LTS** installed
+- **PostgreSQL** installed and running (local database for offline mode)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Install (one-time)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Copy this entire project folder to the gym PC.
+2. Double-click:
+   - `scripts/windows/INSTALL_FITNESSHOOD.cmd`
 
-## Learn More
+This will:
+- install dependencies
+- generate Prisma client
+- build the production app
+- seed the default admin
 
-To learn more about Next.js, take a look at the following resources:
+## Start (daily use)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Double-click:
+- `scripts/windows/START_FITNESSHOOD.cmd`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+It will open `http://localhost:3000` and start the server.
 
-## Deploy on Vercel
+## Auto-start on client PC (recommended)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+After installation, run once:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `scripts/windows/ENABLE_AUTOSTART.cmd`
+
+This creates a Windows Task Scheduler entry so FitnessHood starts automatically when the client logs in.
+
+To remove auto-start later:
+
+- `scripts/windows/DISABLE_AUTOSTART.cmd`
+
+## Offline mode + Supabase backup (recommended)
+
+This project uses **local PostgreSQL** as the primary database so it works offline.
+
+Optional: when WiFi is available, a background sync can upload new users/attendance to Supabase as a backup.
+
+### Enable Supabase backup sync
+
+1. In `.env.local`, set:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+2. Start the app with `START_FITNESSHOOD.cmd` (it starts the sync worker automatically).
+
+## Notes
+
+- If PowerShell blocks `npm` scripts, these `.cmd` files use `npm.cmd` so they still work.
+- To stop the server: close the command window running the app.
+- Data is retained even after closing/restarting because records are stored in local PostgreSQL.
+
+## Publish Online (Domain)
+
+If you want a public domain (Namecheap) + cheap hosting:
+
+- Use **Vercel** for app hosting
+- Use **Supabase Postgres** for production database
+
+Deployment guide:
+
+- `docs/DEPLOY_VERCEL_NAMECHEAP.md`
+- `.env.production.example` (variables template for Vercel)
+

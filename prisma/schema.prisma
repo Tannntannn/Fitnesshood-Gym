@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  MEMBER
+  NON_MEMBER
+  WALK_IN
+  WALK_IN_REGULAR
+}
+
+model User {
+  id          String       @id @default(cuid())
+  firstName   String
+  lastName    String
+  contactNo   String       @default("")
+  email       String?      @db.Text
+  address     String?      @db.Text
+  notes       String?      @db.Text
+  profileImageUrl String?  @db.Text
+  memberPasswordHash String? @db.Text
+  role        UserRole
+  qrCode      String       @unique
+  qrCodeImage String
+
+  membershipStart  DateTime?
+  membershipExpiry DateTime?
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  syncedAt    DateTime?
+  attendance  Attendance[]
+}
+
+model Attendance {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleSnapshot UserRole
+  scannedAt    DateTime @default(now())
+  date         DateTime
+  timeIn       String
+  dayOfWeek    String
+  month        Int
+  year         Int
+  updatedAt    DateTime @updatedAt
+  syncedAt     DateTime?
+
+  @@index([userId, scannedAt])
+  @@index([roleSnapshot, date])
+}
+
+model Admin {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+}
