@@ -25,6 +25,8 @@ model User {
   notes       String?      @db.Text
   profileImageUrl String?  @db.Text
   memberPasswordHash String? @db.Text
+  resetPasswordTokenHash String? @db.Text
+  resetPasswordExpiresAt DateTime?
   role        UserRole
   qrCode      String       @unique
   qrCodeImage String

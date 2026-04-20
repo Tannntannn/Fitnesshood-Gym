@@ -34,6 +34,8 @@ This matches the current Next.js + Prisma + NextAuth stack with minimal risk.
    - then run `npm run db:push`
 5. Seed only if you need initial data/admin:
    - `npm run db:seed`
+6. For member forgot-password support, ensure reset fields exist:
+   - run `prisma/sql/add_member_password_reset_fields.sql` in Supabase SQL Editor (or use `prisma db push` when connection allows).
 
 > Important: use production DB credentials only in Vercel env vars (never in frontend code).
 
@@ -48,10 +50,13 @@ This matches the current Next.js + Prisma + NextAuth stack with minimal risk.
    - `DIRECT_URL` (recommended)
    - `NEXTAUTH_SECRET`
    - `NEXTAUTH_URL` (temporary Vercel URL first, then your custom domain later)
+   - `NEXT_PUBLIC_APP_URL` (base URL for password reset links)
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `SUPABASE_PROFILE_BUCKET` (example: `profile-images`)
+   - `RESEND_API_KEY`
+   - `MAIL_FROM` (verified sender like `FitnessHood <no-reply@your-domain.com>`)
 4. Deploy.
 
 After first deploy, open the Vercel URL and verify login works.

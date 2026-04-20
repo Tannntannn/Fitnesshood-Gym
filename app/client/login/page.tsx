@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -135,6 +136,13 @@ export default function ClientLoginPage() {
               {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {mode === "login" ? (
+            <p className="text-right text-xs">
+              <Link href="/client/forgot-password" className="text-[#00d47d] hover:underline">
+                Forgot password?
+              </Link>
+            </p>
+          ) : null}
         </div>
 
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
