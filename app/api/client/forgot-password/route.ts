@@ -21,7 +21,13 @@ export async function POST(request: Request) {
       message: "If the email is registered, a reset link has been sent.",
     });
 
-    if (!user?.email || !user.memberPasswordHash) {
+    if (!user?.email) {
+      console.info("[forgot-password] skipped send: user_not_found", { email });
+      return genericSuccess;
+    }
+
+    if (!user.memberPasswordHash) {
+      console.info("[forgot-password] skipped send: account_not_activated", { email });
       return genericSuccess;
     }
 
@@ -36,10 +42,15 @@ export async function POST(request: Request) {
 
     const appBaseUrl = getAppBaseUrl();
     const resetLink = `${appBaseUrl}/client/reset-password?token=${encodeURIComponent(rawToken)}`;
+    console.info("[forgot-password] attempting resend send", { email });
     await sendResetEmail(user.email, resetLink);
+    console.info("[forgot-password] resend send success", { email });
 
     return genericSuccess;
   } catch (error) {
+    console.error("[forgot-password] request failed", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
     return NextResponse.json(
       {
         success: false,
