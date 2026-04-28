@@ -16,15 +16,31 @@ export async function GET() {
     if (!user) {
       return NextResponse.json({ success: false, error: "Member not found" }, { status: 404 });
     }
+    const coachRow = await prisma.$queryRaw<Array<{ coachName: string | null }>>`
+      SELECT "coachName" FROM "User" WHERE "id" = ${userId} LIMIT 1
+    `;
+    const coachName = coachRow[0]?.coachName ?? null;
 
     const attendance = await prisma.attendance.findMany({
       where: { userId },
       orderBy: { scannedAt: "desc" },
       take: 20,
     });
+    const payments = await prisma.payment.findMany({
+      where: { userId },
+      orderBy: { paidAt: "desc" },
+      take: 20,
+      include: {
+        service: { select: { name: true, tier: true } },
+        splitPayments: true,
+      },
+    });
 
     const imageUrl = await resolveProfileImageUrl(user.profileImageUrl);
-    return NextResponse.json({ success: true, data: { user: { ...user, profileImageUrl: imageUrl }, attendance } });
+    return NextResponse.json({
+      success: true,
+      data: { user: { ...user, coachName, profileImageUrl: imageUrl }, attendance, payments },
+    });
   } catch (error) {
     return NextResponse.json(
       { success: false, error: "Failed to fetch member dashboard", details: error instanceof Error ? error.message : "Unknown error" },

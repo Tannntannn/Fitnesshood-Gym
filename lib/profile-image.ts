@@ -6,10 +6,15 @@ function parseSupabasePublicObjectUrl(rawUrl: string): { bucket: string; objectP
     if (!url.hostname.endsWith(".supabase.co")) return null;
 
     const marker = "/storage/v1/object/public/";
+    const signMarker = "/storage/v1/object/sign/";
     const idx = url.pathname.indexOf(marker);
-    if (idx === -1) return null;
+    const signIdx = url.pathname.indexOf(signMarker);
+    if (idx === -1 && signIdx === -1) return null;
 
-    const rest = url.pathname.slice(idx + marker.length);
+    const rest =
+      idx !== -1
+        ? url.pathname.slice(idx + marker.length)
+        : url.pathname.slice(signIdx + signMarker.length);
     const slash = rest.indexOf("/");
     if (slash <= 0) return null;
 

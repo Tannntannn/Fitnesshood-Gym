@@ -15,6 +15,28 @@ enum UserRole {
   WALK_IN_REGULAR
 }
 
+enum PaymentMethod {
+  CASH
+  GCASH
+  CARD
+  BANK_TRANSFER
+  MAYA
+  OTHER
+  SPLIT
+}
+
+enum PaymentCollectionStatus {
+  FULLY_PAID
+  PARTIAL
+}
+
+enum MembershipLifecycleStatus {
+  ACTIVE
+  WARNING
+  EXPIRED
+  NO_EXPIRY
+}
+
 model User {
   id          String       @id @default(cuid())
   firstName   String
@@ -33,11 +55,37 @@ model User {
 
   membershipStart  DateTime?
   membershipExpiry DateTime?
+  membershipTier   String?      @db.Text
+  lockInLabel      String?      @db.Text
+  monthlyFeeLabel  String?      @db.Text
+  membershipFeeLabel String?    @db.Text
+  gracePeriodEnd   DateTime?
+  freezeStatus     String?      @db.Text
+  membershipNotes  String?      @db.Text
+  coachName      String?      @db.VarChar(120)
+  monthlyExpiryDate DateTime?
+  fullMembershipExpiry DateTime?
+  daysLeft       Int?
+  membershipStatus MembershipLifecycleStatus?
+  monthsPaid     Int          @default(0)
+  remainingMonths Int?
+  totalContractPrice Decimal? @db.Decimal(10, 2)
+  remainingBalance Decimal?   @db.Decimal(10, 2)
+  loyaltyStars   Int          @default(0)
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   syncedAt    DateTime?
   attendance  Attendance[]
+  payments    Payment[]
+}
+
+model Coach {
+  id        String   @id @default(cuid())
+  name      String   @unique @db.VarChar(120)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Attendance {
@@ -63,4 +111,57 @@ model Admin {
   email     String   @unique
   password  String
   createdAt DateTime @default(now())
+}
+
+model Service {
+  id             String    @id @default(cuid())
+  name           String
+  tier           String
+  contractMonths Int
+  monthlyRate    Decimal   @db.Decimal(10, 2)
+  membershipFee  Decimal   @db.Decimal(10, 2)
+  contractPrice  Decimal   @db.Decimal(10, 2)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  payments       Payment[]
+
+  @@unique([name, tier])
+  @@index([tier, isActive])
+}
+
+model Payment {
+  id            String         @id @default(cuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId     String
+  service       Service        @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  amount        Decimal        @db.Decimal(10, 2)
+  grossAmount   Decimal?       @db.Decimal(10, 2)
+  discountPercent Int? 
+  discountAmount Decimal?      @db.Decimal(10, 2)
+  paymentMethod PaymentMethod
+  collectionStatus PaymentCollectionStatus @default(FULLY_PAID)
+  paidAt        DateTime       @default(now())
+  isSplit       Boolean        @default(false)
+  notes         String?        @db.Text
+  paymentReference String?     @db.VarChar(255)
+  splitPayments SplitPayment[]
+  createdAt     DateTime       @default(now())
+
+  @@index([paidAt])
+  @@index([userId, paidAt])
+  @@index([serviceId, paidAt])
+}
+
+model SplitPayment {
+  id         String        @id @default(cuid())
+  paymentId  String
+  payment    Payment       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  method     PaymentMethod
+  amount     Decimal       @db.Decimal(10, 2)
+  reference  String?       @db.VarChar(255)
+  createdAt  DateTime      @default(now())
+
+  @@index([paymentId])
 }

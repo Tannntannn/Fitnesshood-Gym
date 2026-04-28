@@ -8,10 +8,14 @@ import {
   ClipboardList,
   Home,
   LogOut,
+  Package,
+  ShieldUser,
   UserPlus2,
   UserRoundCheck,
   Users,
   UsersRound,
+  WalletCards,
+  Wallet,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +24,11 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/dashboard", label: "Dashboard & Scan", icon: Home },
   { href: "/register", label: "Register User", icon: UserPlus2 },
+  { href: "/payments", label: "Payments", icon: Wallet },
+  { href: "/services", label: "Services", icon: Package },
+  { href: "/coaches", label: "Coaches", icon: ShieldUser },
   { href: "/users", label: "All Users", icon: Users },
+  { href: "/members-management", label: "Members Management", icon: WalletCards },
 ];
 
 const attendanceLinks = [
@@ -50,7 +58,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 
       <aside
         className={cn(
-          "fixed left-0 top-0 z-50 h-screen w-[86vw] max-w-72 bg-[#0b1530] p-4 text-white shadow-2xl transition-transform duration-300 md:static md:z-20 md:w-64 md:max-w-none md:translate-x-0 md:border-r md:border-slate-800/80 md:shadow-none",
+          "fixed left-0 top-0 z-50 h-screen w-[86vw] max-w-72 bg-[#0b1530] p-4 text-white shadow-2xl transition-transform duration-300 md:sticky md:top-0 md:z-20 md:h-screen md:w-64 md:max-w-none md:self-start md:translate-x-0 md:border-r md:border-slate-800/80 md:shadow-none",
           isOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -79,7 +87,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </div>
             </div>
           </div>
-          <nav className="flex-1 space-y-1 overflow-y-auto pr-1">
+          <nav className="flex-1 space-y-1 overflow-hidden pr-1">
             {links.map((link) => {
               const Icon = link.icon;
               return (
@@ -114,7 +122,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </div>
               </summary>
 
-              <div className="mt-1 space-y-1 pb-1">
+              <div className="mt-1 max-h-56 space-y-1 overflow-y-auto pb-1 pr-1">
                 {attendanceLinks.map((link) => {
                   const Icon = link.icon;
                   return (

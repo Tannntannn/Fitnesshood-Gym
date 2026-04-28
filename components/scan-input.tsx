@@ -12,7 +12,16 @@ type ScanState =
   | { type: "error"; message: string }
   | { type: "warning"; message: string };
 
-export function ScanInput({ onScanSuccess }: { onScanSuccess?: () => void }) {
+type ScanSuccessPayload = {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  role: UserRole;
+  timeIn: string;
+  scannedAt: string;
+};
+
+export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuccessPayload) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState("");
   const [state, setState] = useState<ScanState>({ type: "idle" });
@@ -59,11 +68,21 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: () => void }) {
         body: JSON.stringify({ qrCode: qr }),
       });
       const data = (await res.json()) as
-        | { success: true; user: { firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string } }
+        | {
+            success: true;
+            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string };
+          }
         | { success: false; error: string; lastScanTime?: string; details?: string };
 
       if (res.status === 200 && data.success) {
-        onScanSuccess?.();
+        onScanSuccess?.({
+          userId: data.user.id,
+          firstName: data.user.firstName,
+          lastName: data.user.lastName,
+          role: data.user.role,
+          timeIn: data.user.timeIn,
+          scannedAt: data.user.scannedAt,
+        });
         setState({
           type: "success",
           name: `${data.user.firstName} ${data.user.lastName}`,

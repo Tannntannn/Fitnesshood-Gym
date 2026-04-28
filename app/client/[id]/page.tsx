@@ -32,6 +32,7 @@ export default function ClientMemberDashboard({ params }: { params: { id: string
   const [user, setUser] = useState<MemberUser | null>(null);
   const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
   const [error, setError] = useState("");
+  const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -44,12 +45,25 @@ export default function ClientMemberDashboard({ params }: { params: { id: string
         return;
       }
       setUser(json.data.user);
+      setImageFailed(false);
       setAttendance(json.data.attendance);
     };
 
     load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 60000);
+    const onFocus = () => load();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [params.id]);
 
   const remainingDays = useMemo(() => {
@@ -88,9 +102,14 @@ export default function ClientMemberDashboard({ params }: { params: { id: string
           <Card className="surface-card p-5 lg:col-span-2">
             <div className="flex flex-col sm:flex-row gap-4">
               <div className="h-28 w-28 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
-                {user.profileImageUrl ? (
+                {user.profileImageUrl && !imageFailed ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={user.profileImageUrl} alt="Member profile" className="h-full w-full object-cover" />
+                  <img
+                    src={user.profileImageUrl}
+                    alt="Member profile"
+                    className="h-full w-full object-cover"
+                    onError={() => setImageFailed(true)}
+                  />
                 ) : (
                   <span className="text-3xl font-semibold text-slate-500">
                     {`${user.firstName[0] ?? ""}${user.lastName[0] ?? ""}`}

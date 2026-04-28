@@ -48,6 +48,14 @@ export async function PATCH(request: Request, { params }: Params) {
       membershipStart?: string | null;
       membershipExpiry?: string | null;
       memberPassword?: string;
+      membershipTier?: string | null;
+      lockInLabel?: string | null;
+      monthlyFeeLabel?: string | null;
+      membershipFeeLabel?: string | null;
+      gracePeriodEnd?: string | null;
+      freezeStatus?: string | null;
+      membershipNotes?: string | null;
+      coachName?: string | null;
     };
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -80,6 +88,15 @@ export async function PATCH(request: Request, { params }: Params) {
         if (body.membershipStart !== undefined) data.membershipStart = body.membershipStart ? new Date(body.membershipStart) : null;
         if (body.membershipExpiry !== undefined) data.membershipExpiry = body.membershipExpiry ? new Date(body.membershipExpiry) : null;
       }
+      if (effectiveRole === "MEMBER") {
+        if (body.membershipTier !== undefined) data.membershipTier = body.membershipTier ? body.membershipTier.trim() : null;
+        if (body.lockInLabel !== undefined) data.lockInLabel = body.lockInLabel ? body.lockInLabel.trim() : null;
+        if (body.monthlyFeeLabel !== undefined) data.monthlyFeeLabel = body.monthlyFeeLabel ? body.monthlyFeeLabel.trim() : null;
+        if (body.membershipFeeLabel !== undefined) data.membershipFeeLabel = body.membershipFeeLabel ? body.membershipFeeLabel.trim() : null;
+        if (body.gracePeriodEnd !== undefined) data.gracePeriodEnd = body.gracePeriodEnd ? new Date(body.gracePeriodEnd) : null;
+        if (body.freezeStatus !== undefined) data.freezeStatus = body.freezeStatus ? body.freezeStatus.trim() : null;
+        if (body.membershipNotes !== undefined) data.membershipNotes = body.membershipNotes ? body.membershipNotes.trim() : null;
+      }
       if (typeof body.memberPassword === "string" && body.memberPassword.trim().length > 0) {
         data.memberPasswordHash = await bcrypt.hash(body.memberPassword.trim(), 10);
       }
@@ -103,6 +120,13 @@ export async function PATCH(request: Request, { params }: Params) {
         if (body.role !== "MEMBER") {
           data.membershipStart = null;
           data.membershipExpiry = null;
+          data.membershipTier = null;
+          data.lockInLabel = null;
+          data.monthlyFeeLabel = null;
+          data.membershipFeeLabel = null;
+          data.gracePeriodEnd = null;
+          data.freezeStatus = null;
+          data.membershipNotes = null;
         }
       }
 
@@ -118,6 +142,14 @@ export async function PATCH(request: Request, { params }: Params) {
         where: { id: params.id },
         data,
       });
+
+      if (body.coachName !== undefined) {
+        await tx.$executeRaw`
+          UPDATE "User"
+          SET "coachName" = ${body.coachName ? body.coachName.trim() : null}
+          WHERE "id" = ${params.id}
+        `;
+      }
 
       // Keep attendance categories in sync when admin updates role.
       if (roleChangedTo) {

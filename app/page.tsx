@@ -47,6 +47,35 @@ export default function Home() {
           </div>
         </section>
 
+        <section className="rounded-2xl border border-white/20 bg-black/35 p-4 backdrop-blur-sm sm:p-5">
+          <h2 className="text-lg font-semibold text-[#00d47d] sm:text-xl">About FitnessHood</h2>
+          <p className="mt-1 text-xs text-slate-200 sm:text-sm">
+            See our core offers and house rules before you register or login.
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-emerald-300/35 bg-emerald-900/20 p-3">
+              <p className="text-sm font-semibold text-white">What We Offer</p>
+              <ul className="mt-2 space-y-1 text-xs text-slate-100 sm:text-sm">
+                <li>- Membership tiers: Bronze, Silver, Gold, Platinum, Students</li>
+                <li>- Walk-in passes for regular and student clients</li>
+                <li>- Personal training and structured coaching programs</li>
+                <li>- Add-ons: locker, Wi-Fi, pre-workout, and referrals</li>
+                <li>- Full access to gym equipment and training floor</li>
+              </ul>
+            </div>
+            <div className="rounded-xl border border-cyan-300/35 bg-cyan-900/20 p-3">
+              <p className="text-sm font-semibold text-white">Gym Rules</p>
+              <ul className="mt-2 space-y-1 text-xs text-slate-100 sm:text-sm">
+                <li>- No horseplaying, smoking, or vaping</li>
+                <li>- Return plates and dumbbells after use</li>
+                <li>- Wipe/sanitize equipment before and after use</li>
+                <li>- Wear proper gym attire (no slippers/flipflops)</li>
+                <li>- Respect other members and share equipment between sets</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
         <footer className="text-xs text-slate-300">
           <div className="flex items-center gap-3">
             <p className="text-sm font-medium text-white/90">@fitnesshoodgym</p>

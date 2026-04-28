@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UserRole } from "@prisma/client";
 import { differenceInCalendarDays, format } from "date-fns";
 import { Card } from "@/components/ui/card";
@@ -21,10 +21,39 @@ type UserRow = {
   profileImageUrl?: string | null;
   membershipStart?: string | null;
   membershipExpiry?: string | null;
+  membershipTier?: string | null;
+  lockInLabel?: string | null;
+  monthsPaid?: number;
+  remainingMonths?: number | null;
+  totalContractPrice?: string | null;
+  remainingBalance?: string | null;
+  coachName?: string | null;
   role: UserRole;
-  qrCodeImage: string;
+  qrCodeImage?: string;
   createdAt: string;
 };
+type PaymentRow = {
+  id: string;
+  amount: string;
+  grossAmount?: string | null;
+  discountPercent?: number | null;
+  discountAmount?: string | null;
+  paymentMethod: string;
+  collectionStatus: "FULLY_PAID" | "PARTIAL";
+  paidAt: string;
+  paymentReference?: string | null;
+  splitPayments?: Array<{ method: string; reference?: string | null }>;
+  service: { name: string; tier: string };
+};
+
+function formatPaymentReference(row: PaymentRow): string {
+  if (row.paymentMethod === "SPLIT" && row.splitPayments?.length) {
+    return row.splitPayments
+      .map((sp) => `${sp.method}${sp.reference ? ` (${sp.reference})` : ""}`)
+      .join("; ");
+  }
+  return row.paymentReference || "—";
+}
 
 const roleSections: Array<{ role: UserRole; title: string; headerClass: string; badgeClass: string }> = [
   {
@@ -54,10 +83,11 @@ const roleSections: Array<{ role: UserRole; title: string; headerClass: string; 
 ];
 
 export default function UsersPage() {
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [search, setSearch] = useState("");
   const [role, setRole] = useState<string>("ALL");
-  const [selected, setSelected] = useState<UserRow | null>(null);
+  const [selected, setSelected] = useState<(UserRow & { qrCodeImage: string }) | null>(null);
   const [clientPreviewUser, setClientPreviewUser] = useState<UserRow | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [editingRole, setEditingRole] = useState<Record<string, UserRole>>({});
@@ -65,19 +95,33 @@ export default function UsersPage() {
   const [memberPassword, setMemberPassword] = useState("");
   const [renewDays, setRenewDays] = useState(30);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [userPayments, setUserPayments] = useState<PaymentRow[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const showNotice = (type: "success" | "error", message: string) => {
+    setNotice({ type, message });
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setNotice(null), 2600);
+  };
 
   const load = async () => {
-    const response = await fetch("/api/users");
-    const data = (await response.json()) as { data: UserRow[] };
-    setUsers(data.data ?? []);
+    const usersRes = await fetch("/api/users?includeQr=false");
+    const usersData = (await usersRes.json()) as { data: UserRow[] };
+    const nextUsers = usersData.data ?? [];
+    setUsers(nextUsers);
+    setClientPreviewUser((prev) => {
+      if (!prev) return null;
+      return nextUsers.find((user) => user.id === prev.id) ?? null;
+    });
+    setEditingUser((prev) => {
+      if (!prev) return null;
+      return nextUsers.find((user) => user.id === prev.id) ?? null;
+    });
   };
 
   useEffect(() => {
     load();
-
-    const interval = setInterval(() => {
-      load();
-    }, 3000);
 
     const onFocus = () => load();
     const onVisibility = () => {
@@ -88,9 +132,9 @@ export default function UsersPage() {
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     };
   }, []);
 
@@ -118,8 +162,49 @@ export default function UsersPage() {
     );
   }, [filtered]);
 
+  useEffect(() => {
+    const loadPayments = async () => {
+      if (!clientPreviewUser?.id) {
+        setUserPayments([]);
+        return;
+      }
+      setLoadingPayments(true);
+      const res = await fetch(`/api/payments?userId=${clientPreviewUser.id}&limit=50`);
+      const json = (await res.json()) as { success?: boolean; data?: PaymentRow[] };
+      setUserPayments(json.success ? (json.data ?? []) : []);
+      setLoadingPayments(false);
+    };
+    loadPayments();
+    if (!clientPreviewUser?.id) return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") loadPayments();
+    }, 60000);
+    const onFocus = () => loadPayments();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") loadPayments();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [clientPreviewUser?.id]);
+
   return (
     <Card className="surface-card space-y-5 p-5 lg:p-6">
+      {notice ? (
+        <div
+          className={`fixed right-4 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg ${
+            notice.type === "success"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : "border-red-300 bg-red-50 text-red-700"
+          }`}
+        >
+          {notice.message}
+        </div>
+      ) : null}
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold text-slate-900 tracking-tight">All Users</h1>
@@ -127,6 +212,13 @@ export default function UsersPage() {
         </div>
         <div className="flex flex-col sm:flex-row gap-2.5 w-full lg:w-auto">
           <Input placeholder="Search by name" value={search} onChange={(e) => setSearch(e.target.value)} className="sm:w-64" />
+          <Button
+            variant="outline"
+            className="border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+            onClick={() => load()}
+          >
+            Refresh
+          </Button>
           <select
             className="h-10 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/30"
             value={role}
@@ -164,6 +256,7 @@ export default function UsersPage() {
                             <p className="text-[11px] text-slate-400">#{index + 1}</p>
                             <p className="font-semibold text-slate-800 leading-tight">{user.firstName} {user.lastName}</p>
                             <p className="text-[11px] text-slate-500">{user.address ?? "No address"}</p>
+                            <p className="text-[11px] text-slate-500">Coach: {user.coachName || "Not assigned"}</p>
                           </div>
                           <RoleBadge role={user.role} />
                         </div>
@@ -192,12 +285,18 @@ export default function UsersPage() {
                             className="h-7 w-full px-2.5 text-[11px] bg-[#1e3a5f] text-white hover:bg-[#1e3a5f]/90 shadow-sm"
                             onClick={async () => {
                               const nextRole = editingRole[user.id] ?? user.role;
-                              await fetch(`/api/users/${user.id}`, {
+                              const res = await fetch(`/api/users/${user.id}`, {
                                 method: "PATCH",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ role: nextRole }),
                               });
+                              const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+                              if (!json.success) {
+                                showNotice("error", json.details || json.error || "Failed to update role.");
+                                return;
+                              }
                               await load();
+                              showNotice("success", "User role updated.");
                             }}
                           >
                             Update
@@ -226,7 +325,18 @@ export default function UsersPage() {
                             variant="outline"
                             size="sm"
                             className="h-7 w-full px-2.5 text-[11px] border-slate-300 hover:bg-slate-100"
-                            onClick={() => setSelected(user)}
+                            onClick={async () => {
+                              const res = await fetch(`/api/users/${user.id}`);
+                              const json = (await res.json()) as { success?: boolean; data?: UserRow; error?: string; details?: string };
+                              if (!json.success || !json.data?.qrCodeImage) {
+                                showNotice("error", json.details || json.error || "Failed to load QR code.");
+                                return;
+                              }
+                              setSelected({
+                                ...user,
+                                qrCodeImage: json.data.qrCodeImage,
+                              });
+                            }}
                           >
                             QR
                           </Button>
@@ -265,7 +375,7 @@ export default function UsersPage() {
 
       {clientPreviewUser ? (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-[2px] grid place-items-center p-4 z-50">
-          <Card className="w-full max-w-6xl h-[85vh] p-3 sm:p-4 surface-card shadow-xl fade-in-up flex flex-col gap-3">
+          <Card className="w-full max-w-7xl h-[88vh] p-3 sm:p-4 surface-card shadow-xl fade-in-up flex flex-col gap-3">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Client View Preview</h3>
@@ -282,12 +392,83 @@ export default function UsersPage() {
               </Button>
             </div>
 
-            <div className="flex-1 rounded-xl border border-slate-200 overflow-hidden bg-white">
-              <iframe
-                src={`/client/${clientPreviewUser.id}`}
-                title="Client dashboard preview"
-                className="h-full w-full"
-              />
+            <div className="grid flex-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
+              <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
+                <iframe
+                  src={`/client/${clientPreviewUser.id}`}
+                  title="Client dashboard preview"
+                  className="h-full w-full"
+                />
+              </div>
+              <div className="space-y-3 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <h4 className="text-sm font-semibold text-slate-900">Client Snapshot</h4>
+                  <p className="mt-1">Name: {clientPreviewUser.firstName} {clientPreviewUser.lastName}</p>
+                  <p>Coach: {clientPreviewUser.coachName || "Not assigned"}</p>
+                  <p>Tier: {clientPreviewUser.membershipTier ?? "N/A"}</p>
+                  <p>Lock-in: {clientPreviewUser.lockInLabel ?? "N/A"}</p>
+                  <p>Months paid: {clientPreviewUser.monthsPaid ?? 0}</p>
+                  <p>Remaining months: {clientPreviewUser.remainingMonths ?? "N/A"}</p>
+                  <p>Contract price: {clientPreviewUser.totalContractPrice ?? "N/A"}</p>
+                  <p>Balance: {clientPreviewUser.remainingBalance ?? "0.00"}</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-slate-900">Payment History</h4>
+                    <span className="text-[11px] text-slate-500">{userPayments.length} record(s)</span>
+                  </div>
+                  <div className="max-h-[380px] overflow-auto rounded-lg border border-slate-200 bg-white">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-slate-100 text-slate-600">
+                        <tr className="text-left">
+                          <th className="px-2 py-1.5 font-semibold">Date</th>
+                          <th className="px-2 py-1.5 font-semibold">Service</th>
+                          <th className="px-2 py-1.5 font-semibold">Method</th>
+                          <th className="px-2 py-1.5 font-semibold">Reference</th>
+                          <th className="px-2 py-1.5 font-semibold">Discount</th>
+                          <th className="px-2 py-1.5 font-semibold">Status</th>
+                          <th className="px-2 py-1.5 font-semibold text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {loadingPayments ? (
+                          <tr>
+                            <td colSpan={7} className="px-2 py-4 text-center text-slate-400">Loading payments...</td>
+                          </tr>
+                        ) : userPayments.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-2 py-4 text-center text-slate-400">No payment records yet.</td>
+                          </tr>
+                        ) : (
+                          userPayments.map((row) => (
+                            <tr key={row.id}>
+                              <td className="px-2 py-1.5">{format(new Date(row.paidAt), "MMM d, yyyy hh:mm a")}</td>
+                              <td className="px-2 py-1.5">{row.service.name} - {row.service.tier}</td>
+                              <td className="px-2 py-1.5">{row.paymentMethod}</td>
+                              <td className="max-w-[170px] px-2 py-1.5 font-mono text-[10px] text-slate-600 whitespace-pre-wrap break-all">
+                                {formatPaymentReference(row)}
+                              </td>
+                              <td className="px-2 py-1.5 text-[10px] text-slate-600">
+                                {Number(row.discountPercent ?? 0) > 0
+                                  ? `${Number(row.discountPercent)}% (${Number(row.discountAmount ?? 0).toFixed(2)})`
+                                  : "—"}
+                              </td>
+                              <td className="px-2 py-1.5">{row.service.name === "Membership" ? row.collectionStatus : "N/A"}</td>
+                              <td className="px-2 py-1.5 text-right">
+                                {Number(row.amount).toFixed(2)}
+                                {Number(row.discountPercent ?? 0) > 0 ? (
+                                  <p className="text-[10px] text-slate-400">from {Number(row.grossAmount ?? row.amount).toFixed(2)}</p>
+                                ) : null}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </div>
           </Card>
         </div>
@@ -306,9 +487,15 @@ export default function UsersPage() {
                 variant="destructive"
                 className="shadow-sm"
                 onClick={async () => {
-                  await fetch(`/api/users/${pendingDeleteId}`, { method: "DELETE" });
+                  const res = await fetch(`/api/users/${pendingDeleteId}`, { method: "DELETE" });
+                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+                  if (!json.success) {
+                    showNotice("error", json.details || json.error || "Failed to delete user.");
+                    return;
+                  }
                   setPendingDeleteId(null);
                   await load();
+                  showNotice("success", "User deleted successfully.");
                 }}
               >
                 Delete
@@ -421,14 +608,20 @@ export default function UsersPage() {
                       disabled={savingProfile}
                       onClick={async () => {
                         setSavingProfile(true);
-                        await fetch(`/api/users/${editingUser.id}`, {
+                        const res = await fetch(`/api/users/${editingUser.id}`, {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ renewMembership: true, renewDays }),
                         });
+                        const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
                         setSavingProfile(false);
+                        if (!json.success) {
+                          showNotice("error", json.details || json.error || "Failed to renew membership.");
+                          return;
+                        }
                         setEditingUser(null);
                         await load();
+                        showNotice("success", `Membership renewed by ${renewDays} day(s).`);
                       }}
                     >
                       Renew +{renewDays} days
@@ -440,7 +633,7 @@ export default function UsersPage() {
                   disabled={savingProfile}
                   onClick={async () => {
                     setSavingProfile(true);
-                    await fetch(`/api/users/${editingUser.id}`, {
+                    const res = await fetch(`/api/users/${editingUser.id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
@@ -456,11 +649,17 @@ export default function UsersPage() {
                         memberPassword,
                       }),
                     });
+                    const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
                     setSavingProfile(false);
+                    if (!json.success) {
+                      showNotice("error", json.details || json.error || "Failed to save profile.");
+                      return;
+                    }
                     setEditingUser(null);
                     setMemberPassword("");
                     setRenewDays(30);
                     await load();
+                    showNotice("success", "Profile updated successfully.");
                   }}
                 >
                   Save Changes

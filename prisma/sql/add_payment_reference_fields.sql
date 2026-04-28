@@ -1,0 +1,5 @@
+ALTER TABLE "Payment"
+  ADD COLUMN IF NOT EXISTS "paymentReference" VARCHAR(255);
+
+ALTER TABLE "SplitPayment"
+  ADD COLUMN IF NOT EXISTS "reference" VARCHAR(255);

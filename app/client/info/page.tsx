@@ -8,6 +8,7 @@ import { CircleUserRound, Home } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { formatRoleLabel } from "@/lib/role-labels";
+import { getMembershipStatus } from "@/lib/membership";
 
 type MemberUser = {
   id: string;
@@ -22,6 +23,13 @@ type MemberUser = {
   membershipStart: string | null;
   membershipExpiry: string | null;
   profileImageUrl: string | null;
+  membershipTier?: string | null;
+  lockInLabel?: string | null;
+  monthsPaid?: number;
+  remainingMonths?: number | null;
+  totalContractPrice?: string | null;
+  remainingBalance?: string | null;
+  coachName?: string | null;
 };
 
 type AttendanceRow = {
@@ -30,10 +38,35 @@ type AttendanceRow = {
   date: string;
 };
 
+type PaymentRow = {
+  id: string;
+  amount: string;
+  grossAmount?: string | null;
+  discountPercent?: number | null;
+  discountAmount?: string | null;
+  paymentMethod: string;
+  collectionStatus: "FULLY_PAID" | "PARTIAL";
+  paidAt: string;
+  paymentReference?: string | null;
+  splitPayments?: Array<{ method: string; reference?: string | null }>;
+  service: { name: string; tier: string };
+};
+
+function formatPaymentReference(row: PaymentRow): string {
+  if (row.paymentMethod === "SPLIT" && row.splitPayments?.length) {
+    return row.splitPayments
+      .map((sp) => `${sp.method}${sp.reference ? ` (${sp.reference})` : ""}`)
+      .join("; ");
+  }
+  if (row.paymentReference) return row.paymentReference;
+  return "—";
+}
+
 export default function ClientInfoPage() {
   const router = useRouter();
   const [user, setUser] = useState<MemberUser | null>(null);
   const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [error, setError] = useState("");
   const [uploadingImage, setUploadingImage] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
@@ -42,7 +75,7 @@ export default function ClientInfoPage() {
     const load = async () => {
       const res = await fetch("/api/client/me");
       const json = (await res.json()) as
-        | { success: true; data: { user: MemberUser; attendance: AttendanceRow[] } }
+        | { success: true; data: { user: MemberUser; attendance: AttendanceRow[]; payments: PaymentRow[] } }
         | { success: false; error: string };
 
       if (!json.success) {
@@ -56,11 +89,24 @@ export default function ClientInfoPage() {
 
       setUser(json.data.user);
       setAttendance(json.data.attendance);
+      setPayments(json.data.payments ?? []);
     };
 
     load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 60000);
+    const onFocus = () => load();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [router]);
 
   useEffect(() => {
@@ -89,6 +135,11 @@ export default function ClientInfoPage() {
     if (!user?.membershipExpiry) return null;
     return differenceInCalendarDays(new Date(user.membershipExpiry), new Date());
   }, [user?.membershipExpiry]);
+  const membershipStatus = useMemo(() => getMembershipStatus(user?.membershipExpiry), [user?.membershipExpiry]);
+  const latestMembershipPayment = useMemo(
+    () => payments.find((row) => row.service.name === "Membership") ?? null,
+    [payments],
+  );
 
   if (error) {
     return (
@@ -164,6 +215,7 @@ export default function ClientInfoPage() {
                 <p className="text-[#00d47d]">{formatRoleLabel(user.role)}</p>
                 <p>Email: {user.email || "N/A"}</p>
                 <p>Contact: {user.contactNo || "N/A"}</p>
+                <p>Coach: {user.coachName || "Not assigned"}</p>
                 <p className="text-xs text-slate-300">{format(new Date(), "MMM d, yyyy hh:mm a")}</p>
               </div>
             </div>
@@ -219,8 +271,39 @@ export default function ClientInfoPage() {
             </div>
 
             {user.role === "MEMBER" ? (
-              <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="rounded-lg border border-white/20 bg-black/30 p-2">
+              <div className="mt-3 space-y-2">
+                {membershipStatus === "EXPIRING_SOON" ? (
+                  <div className="rounded-lg border border-amber-300/60 bg-amber-500/20 px-3 py-2 text-xs text-amber-100">
+                    Membership expiring soon. Please renew this week to avoid interruption.
+                  </div>
+                ) : null}
+                {membershipStatus === "EXPIRED" ? (
+                  <div className="rounded-lg border border-red-300/60 bg-red-500/20 px-3 py-2 text-xs text-red-100">
+                    Membership expired. Please contact the admin for renewal.
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2">
+                    <p className="text-slate-300">Tier</p>
+                    <p className="mt-1 font-semibold">{user.membershipTier || "Unassigned"}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2">
+                    <p className="text-slate-300">Status</p>
+                    <p className="mt-1 font-semibold">
+                      {membershipStatus === "EXPIRING_SOON" ? "Expiring Soon" : membershipStatus === "EXPIRED" ? "Expired" : "Active"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2">
+                    <p className="text-slate-300">Lock-in</p>
+                    <p className="mt-1 font-semibold">{user.lockInLabel || "N/A"}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2">
+                    <p className="text-slate-300">Remaining</p>
+                    <p className="mt-1 font-semibold">{remainingDays !== null ? `${remainingDays} days` : "N/A"}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-2">
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2">
                   <p className="text-slate-300">Start</p>
                   <p className="mt-1 font-semibold">{user.membershipStart ? format(new Date(user.membershipStart), "MMM d, yyyy") : "N/A"}</p>
                 </div>
@@ -228,9 +311,6 @@ export default function ClientInfoPage() {
                   <p className="text-slate-300">Expiry</p>
                   <p className="mt-1 font-semibold">{user.membershipExpiry ? format(new Date(user.membershipExpiry), "MMM d, yyyy") : "N/A"}</p>
                 </div>
-                <div className="rounded-lg border border-white/20 bg-black/30 p-2">
-                  <p className="text-slate-300">Remaining</p>
-                  <p className="mt-1 font-semibold">{remainingDays !== null ? `${remainingDays} days` : "N/A"}</p>
                 </div>
               </div>
             ) : null}
@@ -266,6 +346,108 @@ export default function ClientInfoPage() {
                         <tr key={row.id}>
                           <td className="px-4 py-2.5">{format(new Date(row.date), "MMMM d, yyyy")}</td>
                           <td className="px-4 py-2.5">{row.timeIn}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Payments and Billing</h3>
+                <span className="text-xs text-slate-300">Latest 20 payments</span>
+              </div>
+              {user.role === "MEMBER" ? (
+                <div className="mb-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2 text-center">
+                    <p className="text-slate-300">Months Paid</p>
+                    <p className="mt-1 font-semibold">{user.monthsPaid ?? 0}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2 text-center">
+                    <p className="text-slate-300">Remaining Months</p>
+                    <p className="mt-1 font-semibold">{user.remainingMonths ?? "N/A"}</p>
+                  </div>
+                  <div className="rounded-lg border border-white/20 bg-black/30 p-2 text-center">
+                    <p className="text-slate-300">Contract Price</p>
+                    <p className="mt-1 font-semibold">{Number(user.totalContractPrice ?? 0).toFixed(2)}</p>
+                  </div>
+                  <div className="rounded-lg border border-red-300/40 bg-red-500/15 p-2 text-center">
+                    <p className="text-red-200">Pending Balance</p>
+                    <p className="mt-1 font-semibold text-red-100">{Number(user.remainingBalance ?? 0).toFixed(2)}</p>
+                  </div>
+                </div>
+              ) : null}
+              {user.role === "MEMBER" ? (
+                <div className="mb-2 rounded-lg border border-amber-300/40 bg-amber-500/15 px-3 py-2 text-xs text-amber-100">
+                  <p className="font-semibold">Membership Billing Status</p>
+                  <p>Remaining Balance: {Number(user.remainingBalance ?? 0).toFixed(2)}</p>
+                  <p>
+                    Latest Membership Payment:{" "}
+                    {latestMembershipPayment
+                      ? latestMembershipPayment.collectionStatus === "PARTIAL"
+                        ? "Partial"
+                        : "Fully Paid"
+                      : "No membership payment yet"}
+                  </p>
+                </div>
+              ) : null}
+              <div className="overflow-x-auto rounded-xl border border-white/20 bg-black/25">
+                <table className="w-full text-sm">
+                  <thead className="bg-black/35 text-slate-200">
+                    <tr className="text-left">
+                      <th className="px-4 py-2.5 font-semibold">Date</th>
+                      <th className="px-4 py-2.5 font-semibold">Service</th>
+                      <th className="px-4 py-2.5 font-semibold">Method</th>
+                      <th className="px-4 py-2.5 font-semibold">Reference</th>
+                      <th className="px-4 py-2.5 font-semibold">Discount</th>
+                      <th className="px-4 py-2.5 font-semibold">Payment Status</th>
+                      <th className="px-4 py-2.5 font-semibold text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {payments.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-6 text-center text-slate-300">No payment records yet.</td>
+                      </tr>
+                    ) : (
+                      payments.map((row) => (
+                        <tr key={row.id}>
+                          <td className="px-4 py-2.5">{format(new Date(row.paidAt), "MMMM d, yyyy hh:mm a")}</td>
+                          <td className="px-4 py-2.5">{row.service.name} - {row.service.tier}</td>
+                          <td className="px-4 py-2.5">{row.paymentMethod}</td>
+                          <td className="px-4 py-2.5 font-mono text-[11px] text-slate-300 whitespace-pre-wrap break-all">
+                            {formatPaymentReference(row)}
+                          </td>
+                          <td className="px-4 py-2.5 text-[11px] text-slate-300">
+                            {Number(row.discountPercent ?? 0) > 0
+                              ? `${Number(row.discountPercent)}% (${Number(row.discountAmount ?? 0).toFixed(2)})`
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            {row.service.name === "Membership" ? (
+                              <span
+                                className={`rounded px-2 py-1 text-[11px] font-medium ${
+                                  row.collectionStatus === "PARTIAL"
+                                    ? "border border-amber-300/50 bg-amber-500/20 text-amber-100"
+                                    : "border border-emerald-300/50 bg-emerald-500/20 text-emerald-100"
+                                }`}
+                              >
+                                {row.collectionStatus === "PARTIAL" ? "Partial" : "Fully Paid"}
+                              </span>
+                            ) : (
+                              <span className="text-slate-300">N/A</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            {Number(row.amount).toFixed(2)}
+                            {Number(row.discountPercent ?? 0) > 0 ? (
+                              <p className="text-[10px] text-slate-400">
+                                from {Number(row.grossAmount ?? row.amount).toFixed(2)}
+                              </p>
+                            ) : null}
+                          </td>
                         </tr>
                       ))
                     )}
