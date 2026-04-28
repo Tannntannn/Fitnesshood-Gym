@@ -30,7 +30,7 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
   const submitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrExtractRegex = /\bGYM-(MEM|NMB|WLK|WIR)-([0-9]{8}|[A-Z0-9-]{6,30})\b/i;
   /** Next macrotick after input so value is complete; ~0ms after buffer flush */
-  const SCHEDULE_MS = 0;
+  const SCHEDULE_MS = 80;
 
   useEffect(() => {
     const focus = () => {
@@ -40,10 +40,18 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
     focus();
     const onVisibility = () => focus();
     window.addEventListener("focus", focus);
+    window.addEventListener("attendance-focus-scanner", focus as EventListener);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("focus", focus);
+      window.removeEventListener("attendance-focus-scanner", focus as EventListener);
       document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (submitTimerRef.current) clearTimeout(submitTimerRef.current);
     };
   }, []);
 
@@ -56,7 +64,7 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
     if (!qr) return;
 
     const now = Date.now();
-    if (lastSubmittedRef.current?.qr === qr && now - lastSubmittedRef.current.at < 400) return;
+    if (lastSubmittedRef.current?.qr === qr && now - lastSubmittedRef.current.at < 900) return;
     lastSubmittedRef.current = { qr, at: now };
     isSubmittingRef.current = true;
     setState({ type: "processing" });
@@ -112,7 +120,7 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto text-center">
+    <div className="mx-auto w-full max-w-3xl space-y-4 text-center">
       <input
         ref={inputRef}
         value={value}
@@ -138,35 +146,35 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
       />
 
       {state.type === "idle" && (
-        <div className="rounded-xl bg-slate-800 text-white p-10 border border-slate-700 transition-all duration-300 ease-out">
-          <div className="flex items-center justify-center mb-3">
-            <QrCode className="h-12 w-12 animate-pulse text-[#f97316]" />
+        <div className="min-h-[180px] rounded-xl border border-slate-700 bg-slate-800 p-6 text-white transition-all duration-300 ease-out sm:min-h-[220px] sm:p-8 md:p-10">
+          <div className="mb-3 flex items-center justify-center">
+            <QrCode className="h-10 w-10 animate-pulse text-[#f97316] sm:h-12 sm:w-12" />
           </div>
-          <p className="text-3xl font-semibold">Ready to Scan</p>
+          <p className="text-2xl font-semibold sm:text-3xl">Ready to Scan</p>
         </div>
       )}
 
       {state.type === "processing" && (
         <div
-          className="rounded-xl bg-slate-800 text-white p-10 border border-slate-600 transition-all duration-200 ease-out"
+          className="min-h-[180px] rounded-xl border border-slate-600 bg-slate-800 p-6 text-white transition-all duration-200 ease-out sm:min-h-[220px] sm:p-8 md:p-10"
           role="status"
           aria-live="polite"
           aria-busy="true"
         >
-          <div className="flex items-center justify-center mb-3">
-            <Loader2 className="h-12 w-12 animate-spin text-[#f97316]" aria-hidden />
+          <div className="mb-3 flex items-center justify-center">
+            <Loader2 className="h-10 w-10 animate-spin text-[#f97316] sm:h-12 sm:w-12" aria-hidden />
           </div>
-          <p className="text-2xl font-semibold">Processing scan…</p>
+          <p className="text-xl font-semibold sm:text-2xl">Processing scan...</p>
           <p className="mt-2 text-sm text-slate-400">Please wait while we verify this QR.</p>
         </div>
       )}
 
       {state.type === "success" && (
-        <div className="rounded-xl bg-green-600 text-white p-10 space-y-2 transition-all duration-300 ease-out">
+        <div className="min-h-[180px] space-y-2 rounded-xl bg-green-600 p-6 text-white transition-all duration-300 ease-out sm:min-h-[220px] sm:p-8 md:p-10">
           <div className="flex items-center justify-center">
             <CheckCircle2 className="h-10 w-10 text-white" />
           </div>
-          <p className="text-2xl font-bold">Welcome, {state.name}</p>
+          <p className="text-xl font-bold sm:text-2xl">Welcome, {state.name}</p>
           <div className="flex justify-center">
             <RoleBadge role={state.role} />
           </div>
@@ -176,8 +184,8 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
       )}
 
       {state.type === "error" && (
-        <div className="rounded-xl bg-red-600 text-white p-10 text-2xl font-semibold transition-all duration-300 ease-out">
-          <div className="flex items-center justify-center mb-2">
+        <div className="min-h-[180px] rounded-xl bg-red-600 p-6 text-xl font-semibold text-white transition-all duration-300 ease-out sm:min-h-[220px] sm:p-8 sm:text-2xl md:p-10">
+          <div className="mb-2 flex items-center justify-center">
             <XCircle className="h-10 w-10" />
           </div>
           {state.message}
@@ -185,8 +193,8 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
       )}
 
       {state.type === "warning" && (
-        <div className="rounded-xl bg-amber-500 text-slate-900 p-10 text-2xl font-semibold transition-all duration-300 ease-out">
-          <div className="flex items-center justify-center mb-2">
+        <div className="min-h-[180px] rounded-xl bg-amber-500 p-6 text-xl font-semibold text-slate-900 transition-all duration-300 ease-out sm:min-h-[220px] sm:p-8 sm:text-2xl md:p-10">
+          <div className="mb-2 flex items-center justify-center">
             <AlertTriangle className="h-10 w-10" />
           </div>
           {state.message}

@@ -31,6 +31,7 @@ type PaymentRow = {
   user: { id: string; firstName: string; lastName: string; role: string; remainingBalance: string | null; membershipTier?: string | null };
   service: { id: string; name: string; tier: string };
   paymentReference?: string | null;
+  notes?: string | null;
   splitPayments?: Array<{ id: string; method: string; amount: string; reference?: string | null }>;
 };
 
@@ -51,6 +52,17 @@ type ConfirmResult = {
 };
 
 const methodOptions = ["CASH", "GCASH", "CARD", "BANK_TRANSFER", "MAYA", "OTHER"] as const;
+
+type EditableTransaction = {
+  id: string;
+  amount: string;
+  paymentMethod: string;
+  collectionStatus: "FULLY_PAID" | "PARTIAL";
+  paidAtLocal: string;
+  paymentReference: string;
+  notes: string;
+  isSplit: boolean;
+};
 
 function methodMayHaveReference(method: string): boolean {
   return method === "GCASH" || method === "MAYA" || method === "BANK_TRANSFER" || method === "CARD";
@@ -118,6 +130,9 @@ export default function PaymentsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [exportingPayments, setExportingPayments] = useState(false);
   const [importingPayments, setImportingPayments] = useState(false);
+  const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<EditableTransaction | null>(null);
+  const [savingTransactionEdit, setSavingTransactionEdit] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<ConfirmResult | null>(null);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -126,6 +141,13 @@ export default function PaymentsPage() {
     setNotice({ type, message });
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = setTimeout(() => setNotice(null), 2600);
+  };
+
+  const toDateTimeLocalValue = (value: string): string => {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
   const load = async () => {
@@ -422,10 +444,10 @@ export default function PaymentsPage() {
     }).format(value);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 px-1 sm:px-0">
       {notice ? (
         <div
-          className={`fixed right-4 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg ${
+          className={`fixed left-3 right-3 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg sm:left-auto sm:right-4 ${
             notice.type === "success"
               ? "border-emerald-300 bg-emerald-50 text-emerald-800"
               : "border-red-300 bg-red-50 text-red-700"
@@ -434,8 +456,8 @@ export default function PaymentsPage() {
           {notice.message}
         </div>
       ) : null}
-      <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <Card className="surface-card space-y-4 p-5">
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+        <Card className="surface-card space-y-4 p-3 sm:p-5">
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Confirm Payment</h1>
           <p className="text-sm text-slate-500">Record payment, update membership status, and recompute balances instantly.</p>
@@ -471,7 +493,7 @@ export default function PaymentsPage() {
           ))}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-600">Client ({roleTabs.find((tab) => tab.id === activeRole)?.label})</label>
             <Input
@@ -643,7 +665,7 @@ export default function PaymentsPage() {
           {enableSplit ? (
             <div className="mt-3 space-y-2">
               {splits.map((row, idx) => (
-                <div key={`${idx}-${row.method}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                <div key={`${idx}-${row.method}`} className="grid gap-2 lg:grid-cols-[1fr_1fr_1fr_auto]">
                   <select
                     className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
                     value={row.method}
@@ -708,7 +730,7 @@ export default function PaymentsPage() {
                   </Button>
                 </div>
               ))}
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <Button
                   variant="outline"
                   className="border-slate-300 hover:bg-slate-100"
@@ -796,7 +818,7 @@ export default function PaymentsPage() {
         </Button>
         </Card>
 
-        <Card className="surface-card space-y-3 p-5">
+        <Card className="surface-card space-y-3 p-3 sm:p-5">
           <h2 className="text-base font-semibold text-slate-900">Payment Result</h2>
           {selectedService ? (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
@@ -840,7 +862,7 @@ export default function PaymentsPage() {
         </Card>
       </div>
 
-      <Card className="surface-card p-5">
+      <Card className="surface-card p-3 sm:p-5">
         <h2 className="text-base font-semibold text-slate-900">Payment Analytics and Records</h2>
         <p className="mb-4 text-xs text-slate-500">Role-based summary and bar graph for easier sales comparison.</p>
         <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -861,7 +883,7 @@ export default function PaymentsPage() {
               </button>
             ))}
           </div>
-          <div className="grid gap-2 sm:grid-cols-[1.4fr_0.7fr_0.7fr_1.1fr_auto]">
+          <div className="grid gap-2 lg:grid-cols-[1.4fr_0.7fr_0.7fr_1.1fr_auto]">
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">Year (for Monthly/Annual ranges)</label>
               <select
@@ -910,7 +932,7 @@ export default function PaymentsPage() {
               <label className="mb-1 block text-xs font-medium text-slate-600">Specific Date (overrides buttons)</label>
               <Input type="date" value={salesSpecificDate} onChange={(e) => setSalesSpecificDate(e.target.value)} />
             </div>
-            <div className="self-end">
+            <div className="lg:self-end">
               <Button
                 type="button"
                 variant="outline"
@@ -956,9 +978,10 @@ export default function PaymentsPage() {
           </div>
         </div>
 
-        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+        <div className="grid gap-5">
+        <div className="order-2 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
           <h3 className="mb-3 text-sm font-semibold text-slate-900">Sales Trend Chart</h3>
-          <div className="mb-4 flex flex-wrap items-center justify-center gap-3 text-xs">
+          <div className="mb-4 flex flex-wrap items-center gap-3 text-xs">
             {trendSeries.map((series) => (
               <span key={series.key} className="inline-flex items-center gap-1 text-slate-700">
                 <span className={`h-2.5 w-2.5 rounded ${series.color}`} /> {series.label}
@@ -968,7 +991,7 @@ export default function PaymentsPage() {
 
           <div className="rounded-lg border border-slate-200 p-3">
             <p className="mb-2 text-[11px] text-slate-500">Scroll horizontally below to view all annual bars.</p>
-            <div className="overflow-x-scroll pb-2" style={{ scrollbarGutter: "stable both-edges" }}>
+            <div className="overflow-x-auto pb-2" style={{ scrollbarGutter: "stable both-edges" }}>
             <div
               className="grid grid-cols-[96px_1fr] gap-3"
               style={{ minWidth: `${Math.max(1180, trendData.length * 250 + 140)}px` }}
@@ -1012,10 +1035,10 @@ export default function PaymentsPage() {
           </div>
         </div>
 
-        <div className="border-t border-slate-200 pt-4">
+        <div className="order-1 border-t border-slate-200 pt-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-900">Payment Records</h3>
-            <div className="flex items-center gap-2">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
               <input
                 ref={paymentImportInputRef}
                 type="file"
@@ -1106,7 +1129,7 @@ export default function PaymentsPage() {
               </Button>
             </div>
           </div>
-          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-4">
             {roleTabs.map((roleTab) => {
               const data = recordsByRole[roleTab.id];
               return (
@@ -1124,9 +1147,9 @@ export default function PaymentsPage() {
                       ) : (
                         data.map((row) => (
                           <div key={row.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs">
-                            <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
                               <p className="font-semibold text-slate-800">{row.user.firstName} {row.user.lastName}</p>
-                              <div className="flex items-center gap-1">
+                              <div className="flex flex-wrap items-center gap-1">
                                 <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-700">{row.paymentMethod}</span>
                                 {row.user.role === "MEMBER" && row.service.name === "Membership" ? (
                                   <span
@@ -1142,7 +1165,7 @@ export default function PaymentsPage() {
                               </div>
                             </div>
                             <p className="mt-1 text-slate-600">{row.service.name} - {row.service.tier}</p>
-                            <div className="mt-1 flex items-center justify-between text-slate-700">
+                            <div className="mt-1 flex flex-col gap-0.5 text-slate-700 sm:flex-row sm:items-center sm:justify-between">
                               <span>Paid: {Number(row.amount).toFixed(2)}</span>
                               <span>{new Date(row.paidAt).toLocaleString()}</span>
                             </div>
@@ -1160,6 +1183,78 @@ export default function PaymentsPage() {
                             ) : row.paymentReference ? (
                               <p className="mt-1 font-mono text-[10px] text-slate-500">Ref: {row.paymentReference}</p>
                             ) : null}
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-6 border-slate-300 bg-white px-2 text-[10px] text-slate-700 hover:bg-slate-100"
+                                disabled={updatingTransactionId === row.id}
+                                onClick={() => {
+                                  setEditingTransaction({
+                                    id: row.id,
+                                    amount: Number(row.amount).toFixed(2),
+                                    paymentMethod: row.paymentMethod,
+                                    collectionStatus: row.collectionStatus,
+                                    paidAtLocal: toDateTimeLocalValue(row.paidAt),
+                                    paymentReference: row.paymentReference ?? "",
+                                    notes: row.notes ?? "",
+                                    isSplit: row.paymentMethod === "SPLIT",
+                                  });
+                                }}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-6 border-amber-300 bg-white px-2 text-[10px] text-amber-700 hover:bg-amber-50"
+                                disabled={updatingTransactionId === row.id}
+                                onClick={async () => {
+                                  const reason = window.prompt("Void reason", "Admin correction");
+                                  if (reason === null) return;
+                                  const confirmed = window.confirm("Void this transaction?");
+                                  if (!confirmed) return;
+                                  setUpdatingTransactionId(row.id);
+                                  const res = await fetch(`/api/payments/${row.id}`, {
+                                    method: "PATCH",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ voidTransaction: true, voidReason: reason }),
+                                  });
+                                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+                                  setUpdatingTransactionId(null);
+                                  if (!json.success) {
+                                    showNotice("error", json.details || json.error || "Failed to void transaction.");
+                                    return;
+                                  }
+                                  await load();
+                                  showNotice("success", "Transaction voided.");
+                                }}
+                              >
+                                Void
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-6 border-red-300 bg-white px-2 text-[10px] text-red-700 hover:bg-red-50"
+                                disabled={updatingTransactionId === row.id}
+                                onClick={async () => {
+                                  const confirmed = window.confirm("Delete this transaction permanently?");
+                                  if (!confirmed) return;
+                                  setUpdatingTransactionId(row.id);
+                                  const res = await fetch(`/api/payments/${row.id}`, { method: "DELETE" });
+                                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+                                  setUpdatingTransactionId(null);
+                                  if (!json.success) {
+                                    showNotice("error", json.details || json.error || "Failed to delete transaction.");
+                                    return;
+                                  }
+                                  await load();
+                                  showNotice("success", "Transaction deleted.");
+                                }}
+                              >
+                                Delete
+                              </Button>
+                            </div>
                           </div>
                         ))
                       )}
@@ -1170,7 +1265,150 @@ export default function PaymentsPage() {
             })}
           </div>
         </div>
+        </div>
       </Card>
+      {editingTransaction ? (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="max-h-[92vh] w-full max-w-xl space-y-4 overflow-y-auto border border-slate-300 bg-white p-4 sm:p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <h3 className="text-lg font-semibold text-slate-900">Edit Transaction</h3>
+              <Button
+                variant="outline"
+                className="border-slate-300 hover:bg-slate-100"
+                onClick={() => setEditingTransaction(null)}
+                disabled={savingTransactionEdit}
+              >
+                Close
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">Amount</label>
+                <Input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={editingTransaction.amount}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, amount: e.target.value })}
+                  disabled={editingTransaction.isSplit}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">Payment Method</label>
+                <select
+                  className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                  value={editingTransaction.paymentMethod}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, paymentMethod: e.target.value })}
+                  disabled={editingTransaction.isSplit}
+                >
+                  {methodOptions.map((method) => (
+                    <option key={method} value={method}>
+                      {method}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">Collection Status</label>
+                <select
+                  className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                  value={editingTransaction.collectionStatus}
+                  onChange={(e) =>
+                    setEditingTransaction({
+                      ...editingTransaction,
+                      collectionStatus: e.target.value as "FULLY_PAID" | "PARTIAL",
+                    })
+                  }
+                >
+                  <option value="FULLY_PAID">FULLY_PAID</option>
+                  <option value="PARTIAL">PARTIAL</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">Timestamp</label>
+                <Input
+                  type="datetime-local"
+                  value={editingTransaction.paidAtLocal}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, paidAtLocal: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <label className="text-xs font-medium text-slate-600">Reference</label>
+                <Input
+                  value={editingTransaction.paymentReference}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, paymentReference: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <label className="text-xs font-medium text-slate-600">Notes</label>
+                <Input
+                  value={editingTransaction.notes}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, notes: e.target.value })}
+                />
+              </div>
+            </div>
+            {editingTransaction.isSplit ? (
+              <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Split transaction details cannot be edited directly. Use Void or Delete + re-create.
+              </p>
+            ) : null}
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-3">
+              <Button
+                variant="outline"
+                className="border-slate-300 text-slate-700 hover:bg-slate-100"
+                onClick={() => setEditingTransaction(null)}
+                disabled={savingTransactionEdit}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-[#1e3a5f] text-white hover:bg-[#1e3a5f]/90"
+                disabled={savingTransactionEdit}
+                onClick={async () => {
+                  if (editingTransaction.isSplit) {
+                    showNotice("error", "Split transactions cannot be edited directly.");
+                    return;
+                  }
+                  const amount = Number(editingTransaction.amount);
+                  if (!Number.isFinite(amount) || amount <= 0) {
+                    showNotice("error", "Amount must be greater than zero.");
+                    return;
+                  }
+                  const paidAtIso = editingTransaction.paidAtLocal ? new Date(editingTransaction.paidAtLocal).toISOString() : "";
+                  if (!paidAtIso || Number.isNaN(new Date(paidAtIso).getTime())) {
+                    showNotice("error", "Invalid timestamp.");
+                    return;
+                  }
+                  setSavingTransactionEdit(true);
+                  const res = await fetch(`/api/payments/${editingTransaction.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      amount,
+                      paymentMethod: editingTransaction.paymentMethod,
+                      collectionStatus: editingTransaction.collectionStatus,
+                      paidAt: paidAtIso,
+                      paymentReference: editingTransaction.paymentReference,
+                      notes: editingTransaction.notes,
+                    }),
+                  });
+                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+                  setSavingTransactionEdit(false);
+                  if (!json.success) {
+                    showNotice("error", json.details || json.error || "Failed to edit transaction.");
+                    return;
+                  }
+                  setEditingTransaction(null);
+                  await load();
+                  showNotice("success", "Transaction updated.");
+                }}
+              >
+                {savingTransactionEdit ? "Saving..." : "Save Changes"}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }

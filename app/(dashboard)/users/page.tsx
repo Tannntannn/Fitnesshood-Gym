@@ -193,10 +193,10 @@ export default function UsersPage() {
   }, [clientPreviewUser?.id]);
 
   return (
-    <Card className="surface-card space-y-5 p-5 lg:p-6">
+    <Card className="surface-card space-y-5 p-3 sm:p-5 lg:p-6">
       {notice ? (
         <div
-          className={`fixed right-4 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg ${
+          className={`fixed left-3 right-3 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg sm:left-auto sm:right-4 ${
             notice.type === "success"
               ? "border-emerald-300 bg-emerald-50 text-emerald-800"
               : "border-red-300 bg-red-50 text-red-700"
@@ -233,7 +233,7 @@ export default function UsersPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
+      <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-4">
         {roleSections.map((section) => {
           const rows = groupedUsers[section.role];
           return (
@@ -251,7 +251,7 @@ export default function UsersPage() {
                   ) : (
                     rows.map((user, index) => (
                       <div key={user.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 shadow-sm">
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
                           <div>
                             <p className="text-[11px] text-slate-400">#{index + 1}</p>
                             <p className="font-semibold text-slate-800 leading-tight">{user.firstName} {user.lastName}</p>
@@ -362,8 +362,8 @@ export default function UsersPage() {
       </div>
 
       {selected ? (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-[2px] grid place-items-center p-4 z-40">
-          <Card className="p-5 max-w-md w-full surface-card shadow-xl fade-in-up">
+        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="max-h-[92vh] w-full max-w-md overflow-y-auto p-4 sm:p-5 surface-card shadow-xl fade-in-up">
             <h3 className="text-lg font-semibold text-slate-900 mb-3">User QR Code</h3>
             <QrDisplay name={`${selected.firstName} ${selected.lastName}`} role={formatRoleLabel(selected.role)} qrCodeImage={selected.qrCodeImage} />
             <Button variant="outline" className="mt-4 w-full border-slate-300 hover:bg-slate-100" onClick={() => setSelected(null)}>
@@ -374,9 +374,9 @@ export default function UsersPage() {
       ) : null}
 
       {clientPreviewUser ? (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-[2px] grid place-items-center p-4 z-50">
-          <Card className="w-full max-w-7xl h-[88vh] p-3 sm:p-4 surface-card shadow-xl fade-in-up flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-3">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/70 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="flex h-[92vh] w-full max-w-7xl flex-col gap-3 p-3 sm:h-[88vh] sm:p-4 surface-card shadow-xl fade-in-up">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Client View Preview</h3>
                 <p className="text-xs sm:text-sm text-slate-500">
@@ -414,7 +414,7 @@ export default function UsersPage() {
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="mb-2 flex items-center justify-between">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
                     <h4 className="text-sm font-semibold text-slate-900">Payment History</h4>
                     <span className="text-[11px] text-slate-500">{userPayments.length} record(s)</span>
                   </div>
@@ -475,8 +475,8 @@ export default function UsersPage() {
       ) : null}
 
       {pendingDeleteId ? (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-[2px] grid place-items-center p-4 z-40">
-          <Card className="p-5 max-w-md w-full space-y-3 surface-card shadow-xl fade-in-up">
+        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="w-full max-w-md space-y-3 p-4 sm:p-5 surface-card shadow-xl fade-in-up">
             <h3 className="text-lg font-semibold text-red-700">Delete User?</h3>
             <p className="text-sm text-slate-600">This action cannot be undone and will remove user attendance history.</p>
             <div className="flex justify-end gap-2">
@@ -506,8 +506,8 @@ export default function UsersPage() {
       ) : null}
 
       {editingUser ? (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-[2px] grid place-items-center p-4 z-40">
-          <Card className="p-5 max-w-lg w-full surface-card shadow-xl fade-in-up space-y-4">
+        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="max-h-[92vh] w-full max-w-lg space-y-4 overflow-y-auto p-4 sm:p-5 surface-card shadow-xl fade-in-up">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Edit Member Profile</h3>

@@ -61,10 +61,10 @@ export default function PaymentRecordsPage() {
   }, [rows]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 px-1 sm:px-0">
       {notice ? (
         <div
-          className={`fixed right-4 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg ${
+          className={`fixed left-3 right-3 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg sm:left-auto sm:right-4 ${
             notice.type === "success"
               ? "border-emerald-300 bg-emerald-50 text-emerald-800"
               : "border-red-300 bg-red-50 text-red-700"
@@ -79,7 +79,7 @@ export default function PaymentRecordsPage() {
             <h1 className="text-xl font-semibold text-slate-900">Payment Records</h1>
             <p className="text-sm text-slate-500">Role-based payment history for members and walk-ins.</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <Button
               variant="outline"
               className="border-slate-300 bg-white hover:bg-slate-100"
@@ -177,7 +177,7 @@ export default function PaymentRecordsPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
+      <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-4">
         {roleTables.map((roleItem) => {
           const data = grouped[roleItem.role] ?? [];
           return (
@@ -195,12 +195,12 @@ export default function PaymentRecordsPage() {
                   ) : (
                     data.map((row) => (
                       <div key={row.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
                           <p className="font-semibold text-slate-800">{row.user.firstName} {row.user.lastName}</p>
                           <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">{row.paymentMethod}</span>
                         </div>
                         <p className="mt-1 text-slate-600">{row.service.name} - {row.service.tier}</p>
-                        <div className="mt-1 flex items-center justify-between text-slate-700">
+                        <div className="mt-1 flex flex-col gap-0.5 text-slate-700 sm:flex-row sm:items-center sm:justify-between">
                           <span>Paid: {Number(row.amount).toFixed(2)}</span>
                           <span>{format(new Date(row.paidAt), "MMM d, hh:mm a")}</span>
                         </div>

@@ -1,19 +1,42 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { formatPHTime, getDateOnlyPH, nowInPH } from "@/lib/time";
+import { formatPHTime, getDateOnlyPH, getPHCalendarParts, nowInPH } from "@/lib/time";
+
+function normalizeQrCode(rawInput: string): string {
+  const trimmed = rawInput.trim();
+  if (!trimmed) return "";
+  const upper = trimmed.toUpperCase();
+  const directMatch = upper.match(/\bGYM-(MEM|NMB|WLK|WIR)-[A-Z0-9-]{5,30}\b/i)?.[0];
+  if (directMatch) return directMatch.toUpperCase();
+
+  try {
+    const decoded = decodeURIComponent(trimmed).toUpperCase();
+    const decodedMatch = decoded.match(/\bGYM-(MEM|NMB|WLK|WIR)-[A-Z0-9-]{5,30}\b/i)?.[0];
+    if (decodedMatch) return decodedMatch.toUpperCase();
+  } catch {
+    // keep original when decode fails
+  }
+
+  return upper;
+}
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { qrCode?: string };
-    if (!body.qrCode) return NextResponse.json({ success: false, error: "qrCode is required" }, { status: 400 });
-    const cleanedInput = body.qrCode.trim().toUpperCase();
-    const extracted = cleanedInput.match(/GYM-(MEM|NMB|WLK|WIR)-[A-Z0-9-]{5,30}/)?.[0] ?? cleanedInput;
+    const body = (await request.json()) as { qrCode?: string; userId?: string };
+    const userId = body.userId?.trim();
+    const qrCode = body.qrCode?.trim();
+    if (!userId && !qrCode) {
+      return NextResponse.json({ success: false, error: "qrCode or userId is required" }, { status: 400 });
+    }
 
-    const user = await prisma.user.findUnique({ where: { qrCode: extracted } });
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId } })
+      : await prisma.user.findUnique({ where: { qrCode: normalizeQrCode(qrCode ?? "") } });
     if (!user) return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
 
     const now = nowInPH();
     const todayPH = getDateOnlyPH(now);
+    const phParts = getPHCalendarParts(now);
     const duplicate = await prisma.attendance.findFirst({
       // One attendance log per user per PH calendar day.
       where: { userId: user.id, date: todayPH },
@@ -33,9 +56,9 @@ export async function POST(request: Request) {
         scannedAt: now,
         date: todayPH,
         timeIn: formatPHTime(now),
-        dayOfWeek: new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(now),
-        month: now.getMonth() + 1,
-        year: now.getFullYear(),
+        dayOfWeek: phParts.weekday,
+        month: phParts.month,
+        year: phParts.year,
       },
     });
 

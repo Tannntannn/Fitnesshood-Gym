@@ -72,6 +72,7 @@ export default function MembersManagementPage() {
   const [loading, setLoading] = useState(false);
   const [activeTier, setActiveTier] = useState<string>("Unassigned");
   const [searchName, setSearchName] = useState("");
+  const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const load = async () => {
     const res = await fetch("/api/members-management");
@@ -198,8 +199,19 @@ export default function MembersManagementPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <Card className="surface-card border border-slate-200 bg-gradient-to-r from-slate-50 to-white p-4">
+    <div className="space-y-6 px-1 sm:px-0">
+      {notice ? (
+        <div
+          className={`fixed left-3 right-3 top-16 z-50 rounded-lg border px-3 py-2 text-xs font-medium shadow-lg sm:left-auto sm:right-4 ${
+            notice.type === "success"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : "border-red-300 bg-red-50 text-red-700"
+          }`}
+        >
+          {notice.message}
+        </div>
+      ) : null}
+      <Card className="surface-card border border-slate-200 bg-gradient-to-r from-slate-50 to-white p-3 sm:p-4">
         <h1 className="text-xl font-semibold text-slate-900">Members Management</h1>
         <p className="text-sm text-slate-500">Use tier navigation to quickly review active, expiring soon (&lt;= 7 days), and expired members.</p>
       </Card>
@@ -281,7 +293,7 @@ export default function MembersManagementPage() {
                 </div>
               </div>
             </div>
-            <div className="grid gap-4 xl:grid-cols-3">
+            <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
               {renderTable(`${tier} Active`, active, "active")}
               {renderTable(`${tier} Expiring Soon`, soon, "soon")}
               {renderTable(`${tier} Expired`, expired, "expired")}
@@ -291,8 +303,8 @@ export default function MembersManagementPage() {
       })()}
 
       {editing ? (
-        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-4 backdrop-blur-[2px]">
-          <Card className="w-full max-w-3xl space-y-4 border border-slate-300 bg-white p-5 shadow-2xl">
+        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
+          <Card className="max-h-[92vh] w-full max-w-3xl space-y-4 overflow-y-auto border border-slate-300 bg-white p-4 sm:p-5 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <h3 className="text-lg font-semibold text-slate-900">
                 Edit Membership: {editing.firstName} {editing.lastName}
@@ -381,14 +393,20 @@ export default function MembersManagementPage() {
                   setLoading(true);
                   const expiry = new Date(editing.membershipExpiry);
                   expiry.setDate(expiry.getDate() + 30);
-                  await fetch(`/api/users/${editing.id}`, {
+                  const res = await fetch(`/api/users/${editing.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ membershipExpiry: expiry.toISOString() }),
                   });
+                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
                   setLoading(false);
+                  if (!json.success) {
+                    setNotice({ type: "error", message: json.details || json.error || "Failed to renew membership." });
+                    return;
+                  }
                   setEditing(null);
                   await load();
+                  setNotice({ type: "success", message: "Membership renewed successfully." });
                 }}
               >
                 Renew +30 days
@@ -398,7 +416,7 @@ export default function MembersManagementPage() {
                 className="bg-[#1e3a5f] text-white shadow-sm hover:bg-[#1e3a5f]/90"
                 onClick={async () => {
                   setLoading(true);
-                  await fetch(`/api/users/${editing.id}`, {
+                  const res = await fetch(`/api/users/${editing.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -413,9 +431,15 @@ export default function MembersManagementPage() {
                       membershipNotes: editing.membershipNotes,
                     }),
                   });
+                  const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
                   setLoading(false);
+                  if (!json.success) {
+                    setNotice({ type: "error", message: json.details || json.error || "Failed to save membership changes." });
+                    return;
+                  }
                   setEditing(null);
                   await load();
+                  setNotice({ type: "success", message: "Membership tier and details saved." });
                 }}
               >
                 Save Changes

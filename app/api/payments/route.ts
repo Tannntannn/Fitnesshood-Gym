@@ -18,7 +18,17 @@ export async function GET(request: Request) {
       },
       orderBy: { paidAt: "desc" },
       take: limit,
-      include: {
+      select: {
+        id: true,
+        amount: true,
+        grossAmount: true,
+        discountPercent: true,
+        discountAmount: true,
+        paymentMethod: true,
+        collectionStatus: true,
+        paidAt: true,
+        notes: true,
+        paymentReference: true,
         user: { select: { id: true, firstName: true, lastName: true, role: true, remainingBalance: true, membershipTier: true } },
         service: { select: { id: true, name: true, tier: true } },
         splitPayments: {
