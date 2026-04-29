@@ -1,18 +1,20 @@
-import { NextResponse } from "next/server";
 import { UserRole } from "@prisma/client";
 import { addDays, isAfter } from "date-fns";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { nowInPH } from "@/lib/time";
+import { jsonNoStore } from "@/lib/http";
 
 type Params = { params: { id: string } };
+
+export const dynamic = "force-dynamic";
 
 export async function DELETE(_: Request, { params }: Params) {
   try {
     await prisma.user.delete({ where: { id: params.id } });
-    return NextResponse.json({ success: true, data: { id: params.id } });
+    return jsonNoStore({ success: true, data: { id: params.id } });
   } catch (error) {
-    return NextResponse.json(
+    return jsonNoStore(
       { success: false, error: "Failed to delete user", details: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     );
@@ -22,10 +24,10 @@ export async function DELETE(_: Request, { params }: Params) {
 export async function GET(_: Request, { params }: Params) {
   try {
     const user = await prisma.user.findUnique({ where: { id: params.id } });
-    if (!user) return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
-    return NextResponse.json({ success: true, data: user });
+    if (!user) return jsonNoStore({ success: false, error: "User not found" }, { status: 404 });
+    return jsonNoStore({ success: true, data: user });
   } catch (error) {
-    return NextResponse.json(
+    return jsonNoStore(
       { success: false, error: "Failed to fetch user", details: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     );
@@ -151,6 +153,15 @@ export async function PATCH(request: Request, { params }: Params) {
         `;
       }
 
+      if (body.membershipTier !== undefined && effectiveRole === "MEMBER") {
+        const tierVal = body.membershipTier ? body.membershipTier.trim() : null;
+        await tx.$executeRaw`
+          UPDATE "User"
+          SET "membershipTier" = ${tierVal}
+          WHERE "id" = ${params.id}
+        `;
+      }
+
       // Keep attendance categories in sync when admin updates role.
       if (roleChangedTo) {
         await tx.attendance.updateMany({
@@ -159,11 +170,12 @@ export async function PATCH(request: Request, { params }: Params) {
         });
       }
 
-      return user;
+      const fresh = await tx.user.findUnique({ where: { id: params.id } });
+      return fresh ?? user;
     });
-    return NextResponse.json({ success: true, data: updated });
+    return jsonNoStore({ success: true, data: updated });
   } catch (error) {
-    return NextResponse.json(
+    return jsonNoStore(
       { success: false, error: "Failed to update user", details: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     );

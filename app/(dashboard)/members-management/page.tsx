@@ -26,6 +26,16 @@ type ManagedMember = {
 };
 
 const TIER_ORDER = ["Bronze", "Silver", "Gold", "Platinum", "Students", "Founding Member", "Unassigned"];
+
+/** Prefer stored membershipTier; if empty, use inferred tab tier so the edit form matches the list. */
+function memberForEdit(member: ManagedMember): ManagedMember {
+  const explicit = member.membershipTier?.trim() || null;
+  const fromInference = member.tier !== "Unassigned" ? member.tier : null;
+  return {
+    ...member,
+    membershipTier: explicit ?? fromInference,
+  };
+}
 const TIER_ACCENT: Record<string, string> = {
   Bronze: "from-amber-50 to-amber-100 border-amber-200",
   Silver: "from-slate-100 to-slate-200 border-slate-300",
@@ -75,7 +85,7 @@ export default function MembersManagementPage() {
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const load = async () => {
-    const res = await fetch("/api/members-management");
+    const res = await fetch("/api/members-management", { cache: "no-store" });
     const json = (await res.json()) as { success: boolean; data?: ManagedMember[] };
     if (json.success && json.data) setRows(json.data);
   };
@@ -183,7 +193,7 @@ export default function MembersManagementPage() {
                       <Button
                         size="sm"
                         className="h-7 bg-[#1e3a5f] px-2.5 text-[11px] text-white hover:bg-[#1e3a5f]/90"
-                        onClick={() => setEditing(member)}
+                        onClick={() => setEditing(memberForEdit(member))}
                       >
                         Edit
                       </Button>
@@ -319,10 +329,21 @@ export default function MembersManagementPage() {
                 <label className="text-xs font-medium text-slate-600">Tier</label>
                 <select
                   className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/20"
-                  value={editing.membershipTier ?? "Unassigned"}
+                  value={
+                    editing.membershipTier?.trim()
+                      ? editing.membershipTier.trim()
+                      : editing.tier !== "Unassigned"
+                        ? editing.tier
+                        : "Unassigned"
+                  }
                   onChange={(e) => {
                     const next = e.target.value;
-                    setEditing({ ...editing, membershipTier: next === "Unassigned" ? null : next, tier: next });
+                    const tierValue = next === "Unassigned" ? null : next;
+                    setEditing({
+                      ...editing,
+                      membershipTier: tierValue,
+                      tier: tierValue ?? "Unassigned",
+                    });
                   }}
                 >
                   <option value="Bronze">Bronze</option>
@@ -420,7 +441,7 @@ export default function MembersManagementPage() {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      membershipTier: editing.membershipTier,
+                      membershipTier: editing.membershipTier?.trim() || null,
                       lockInLabel: editing.lockInLabel,
                       membershipStart: editing.membershipStart,
                       membershipExpiry: editing.membershipExpiry,

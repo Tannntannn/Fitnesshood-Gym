@@ -1,0 +1,63 @@
+{
+  "options": {
+    "dryRun": false,
+    "limit": 10
+  },
+  "totals": {
+    "users": 10,
+    "withImages": 8,
+    "skipped": 0,
+    "failed": 0,
+    "processed": 8
+  },
+  "logs": [
+    {
+      "userId": "cmogkvo210000sbayvb7slcgi",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777257106594-2bc19a2c-56bd-4373-a38d-86b4df2ed671.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308904432-cmogkvo210000sbayvb7slcgi-c9484136-2315-445a-8ad5-3a8dc4e29b22.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocq23n40003wkqeglpw0sl8",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777023862118-a33144fb-eac6-4a64-8387-2ee189addbea.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308905997-cmocq23n40003wkqeglpw0sl8-3178d073-9893-4b1b-867f-457bfc1c592a.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocq0jik0002wkqeibyagcsy",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777023857918-c310ce49-6668-4db5-b169-e873273a9ce7.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308908107-cmocq0jik0002wkqeibyagcsy-261b9e54-1e9e-476f-94b7-04a1e818804e.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocpf074000shz6qpxx1dopy",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777022785428-197ff1f6-cb25-4fd6-a3d5-dfadde8a8083.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308909983-cmocpf074000shz6qpxx1dopy-6fa68a84-226f-46be-a59d-96d6a790e796.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocp1dyf000khz6q6yutrr0k",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777022177565-672cad3a-9c86-4f3c-bd7b-71b3ac183f0d.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308912324-cmocp1dyf000khz6q6yutrr0k-7437cc2b-b3b6-4e43-934f-bec34121d8bb.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocosnxx000ghz6qgy2ja6bk",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777021734944-f7542683-a3e8-4308-9f17-dccf53458315.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308913789-cmocosnxx000ghz6qgy2ja6bk-7f35814d-20b0-419c-bc61-ab6f9de993f5.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocokcna000dhz6q4hu63hba",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777021467315-2d4a1421-41b3-4881-89e5-a761c3b220fe.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308915179-cmocokcna000dhz6q4hu63hba-c3cf0985-52de-4f5b-8329-4308a8df7d67.webp",
+      "status": "updated"
+    },
+    {
+      "userId": "cmocnyz6l0008hz6qncmym781",
+      "oldUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/profile-1777020366083-c7f056f4-16ca-4a41-8f32-3f8cd70824ad.jpg",
+      "newUrl": "https://imslqrkkewncixvdlxdb.supabase.co/storage/v1/object/public/profile-images/profiles/optimized/profile-1777308917020-cmocnyz6l0008hz6qncmym781-308aaa23-ffd2-414a-b3e3-2439a1fb6aa2.webp",
+      "status": "updated"
+    }
+  ]
+}

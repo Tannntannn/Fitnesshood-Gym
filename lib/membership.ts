@@ -28,7 +28,7 @@ export function inferMembershipTier(input: {
   membershipFeeLabel?: string | null;
   membershipNotes?: string | null;
 }): string {
-  const direct = input.membershipTier?.trim();
+  const direct = input.membershipTier?.replace(/\u00a0/g, " ").trim();
   if (direct) return direct;
 
   const lockIn = (input.lockInLabel ?? "").toLowerCase();
