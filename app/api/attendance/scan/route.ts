@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { formatPHTime, getDateOnlyPH, getPHCalendarParts, nowInPH } from "@/lib/time";
+import { getAttendanceBlockReason } from "@/lib/attendance-guard";
+import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 
 function normalizeQrCode(rawInput: string): string {
   const trimmed = rawInput.trim();
@@ -35,41 +37,107 @@ export async function POST(request: Request) {
     if (!user) return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
 
     const now = nowInPH();
+    const blockReason = getAttendanceBlockReason(
+      {
+        role: user.role,
+        freezeStatus: user.freezeStatus,
+        freezeEndsAt: user.freezeEndsAt,
+        monthlyExpiryDate: user.monthlyExpiryDate,
+      },
+      now,
+    );
+    if (blockReason) return NextResponse.json({ success: false, error: blockReason }, { status: 403 });
+
     const todayPH = getDateOnlyPH(now);
     const phParts = getPHCalendarParts(now);
-    const duplicate = await prisma.attendance.findFirst({
-      // One attendance log per user per PH calendar day.
-      where: { userId: user.id, date: todayPH },
+
+    // Time-out must run before duplicate-window checks, otherwise a quick manual second save / rescan
+    // right after time-in hits "duplicate" instead of closing the open session.
+    const openSession = await prisma.attendance.findFirst({
+      where: { userId: user.id, date: todayPH, checkedOutAt: null },
       orderBy: { scannedAt: "desc" },
+      select: { id: true, timeIn: true, scannedAt: true },
     });
-    if (duplicate) {
+
+    if (openSession) {
+      const closed = await prisma.attendance.update({
+        where: { id: openSession.id },
+        data: {
+          checkedOutAt: now,
+          timeOut: formatPHTime(now),
+          scannedAt: now,
+        },
+      });
+      return NextResponse.json({
+        success: true,
+        action: "TIME_OUT",
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          role: user.role,
+          timeIn: openSession.timeIn,
+          timeOut: closed.timeOut,
+          scannedAt: new Intl.DateTimeFormat("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+            timeZone: "Asia/Manila",
+          }).format(now),
+        },
+      });
+    }
+
+    const DUPLICATE_WINDOW_MS = 4_000;
+    const recentDuplicate = await prisma.attendance.findFirst({
+      where: {
+        userId: user.id,
+        scannedAt: { gte: new Date(now.getTime() - DUPLICATE_WINDOW_MS) },
+      },
+      orderBy: { scannedAt: "desc" },
+      select: { scannedAt: true, timeIn: true, timeOut: true },
+    });
+    if (recentDuplicate) {
       return NextResponse.json(
-        { success: false, error: "Already scanned", lastScan: duplicate.scannedAt, lastScanTime: duplicate.timeIn },
-        { status: 409 },
+        {
+          success: false,
+          error: "Duplicate scan detected. Please wait a few seconds before rescanning.",
+          lastScan: recentDuplicate.scannedAt,
+          lastScanTime: recentDuplicate.timeOut ?? recentDuplicate.timeIn,
+        },
+        { status: 429 },
       );
     }
 
-    const attendance = await prisma.attendance.create({
-      data: {
-        userId: user.id,
-        roleSnapshot: user.role,
-        scannedAt: now,
-        date: todayPH,
-        timeIn: formatPHTime(now),
-        dayOfWeek: phParts.weekday,
-        month: phParts.month,
-        year: phParts.year,
-      },
+    const attendance = await prisma.$transaction(async (tx) => {
+      const created = await tx.attendance.create({
+        data: {
+          userId: user.id,
+          roleSnapshot: user.role,
+          scannedAt: now,
+          date: todayPH,
+          timeIn: formatPHTime(now),
+          dayOfWeek: phParts.weekday,
+          month: phParts.month,
+          year: phParts.year,
+        },
+      });
+      if (user.role === "MEMBER") {
+        await syncMembershipPenaltyInTx(tx, user.id);
+      }
+      return created;
     });
 
     return NextResponse.json({
       success: true,
+      action: "TIME_IN",
       user: {
         id: user.id,
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
         timeIn: attendance.timeIn,
+        timeOut: attendance.timeOut,
         scannedAt: new Intl.DateTimeFormat("en-US", {
           month: "long",
           day: "numeric",

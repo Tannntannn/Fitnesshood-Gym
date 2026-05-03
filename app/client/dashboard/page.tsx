@@ -4,25 +4,44 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { differenceInCalendarDays } from "date-fns";
 import { format } from "date-fns";
-import { BadgePercent, CircleUserRound, Dumbbell, Home, ShieldCheck, UserCheck } from "lucide-react";
+import { Award, BadgePercent, CircleUserRound, Dumbbell, Home, ShieldCheck, UserCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  ClientAnnouncementBanner,
+  type AnnouncementImageViewMode,
+  type ClientAnnouncementBannerData,
+} from "@/components/client-announcement-banner";
 
 type MemberUser = {
   id: string;
   firstName: string;
   lastName: string;
+  role?: string;
   membershipExpiry?: string | null;
+  fullMembershipExpiry?: string | null;
+  monthlyExpiryDate?: string | null;
   coachName?: string | null;
+};
+type ClientAnnouncement = ClientAnnouncementBannerData & { id: string };
+
+type LoyaltyMini = {
+  currentPoints: number;
+  totalEarned: number;
+  totalUsed: number;
+  recent: Array<{ id: string; points: number; reason: string; createdAt: string }>;
 };
 
 export default function ClientDashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<MemberUser | null>(null);
+  const [announcement, setAnnouncement] = useState<ClientAnnouncement | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [imageViewMode, setImageViewMode] = useState<AnnouncementImageViewMode>("original");
   const aboutRef = useRef<HTMLElement | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [loyalty, setLoyalty] = useState<LoyaltyMini | null>(null);
 
   const showNotice = (type: "success" | "error", message: string) => {
     setNotice({ type, message });
@@ -33,21 +52,56 @@ export default function ClientDashboardPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("/api/client/me");
-        const json = (await res.json()) as { success: true; data: { user: MemberUser } } | { success: false; error: string };
+        const res = await fetch("/api/client/me?scope=dashboard", { cache: "no-store" });
+        const json = (await res.json()) as
+          | { success: true; data: { user: MemberUser; announcement?: ClientAnnouncement | null } }
+          | { success: false; error: string };
 
         if (!json.success) {
           if (res.status === 401) {
             router.replace("/client/login");
             return;
           }
+          setLoyalty(null);
           setError(json.error);
           showNotice("error", json.error || "Failed to refresh dashboard.");
           return;
         }
 
         setUser(json.data.user);
+        setAnnouncement(json.data.announcement ?? null);
+
+        if (json.data.user.role === "MEMBER") {
+          try {
+            const loyRes = await fetch("/api/client/loyalty?limit=5", { cache: "no-store" });
+            const loyJson = (await loyRes.json()) as {
+              success?: boolean;
+              data?: Array<{ id: string; points: number; reason: string | null; createdAt: string }>;
+              summary?: { currentPoints: number; totalEarned: unknown; totalUsed: unknown };
+            };
+            if (loyJson.success && loyJson.summary) {
+              setLoyalty({
+                currentPoints: loyJson.summary.currentPoints,
+                totalEarned: Number(loyJson.summary.totalEarned) || 0,
+                totalUsed: Number(loyJson.summary.totalUsed) || 0,
+                recent: (loyJson.data ?? []).map((r) => ({
+                  id: r.id,
+                  points: r.points,
+                  reason: (r.reason ?? "").trim() || "Entry",
+                  createdAt: r.createdAt,
+                })),
+              });
+            } else {
+              setLoyalty(null);
+            }
+          } catch {
+            setLoyalty(null);
+          }
+        } else {
+          setLoyalty(null);
+        }
       } catch {
+        setLoyalty(null);
         setError("Failed to refresh dashboard.");
         showNotice("error", "Failed to refresh dashboard.");
       }
@@ -56,7 +110,7 @@ export default function ClientDashboardPage() {
     load();
     const id = setInterval(() => {
       if (document.visibilityState === "visible") load();
-    }, 60000);
+    }, 120000);
     const onFocus = () => load();
     const onVisibility = () => {
       if (document.visibilityState === "visible") load();
@@ -145,6 +199,14 @@ export default function ClientDashboardPage() {
               <CircleUserRound className="mr-1.5 h-3.5 w-3.5" />
               Personal Information
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-8 border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20"
+              onClick={() => router.push("/client/news")}
+            >
+              Fitnesshood Announcement
+            </Button>
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden text-xs text-slate-300 sm:inline">{format(new Date(), "MMM d, yyyy hh:mm a")}</span>
@@ -176,7 +238,51 @@ export default function ClientDashboardPage() {
         <div className="absolute inset-0 bg-gradient-to-b from-[#050b16]/75 via-[#0a1630]/80 to-[#040912]/90" />
         <div className="mx-auto w-full max-w-6xl space-y-5">
           <div className="scroll-reveal delay-0 relative rounded-2xl border border-emerald-300/25 bg-slate-950/65 p-5 text-center shadow-xl shadow-emerald-950/20 backdrop-blur-sm sm:p-8">
-            {user.membershipExpiry ? (
+            {announcement ? (
+              <ClientAnnouncementBanner
+                announcement={announcement}
+                imageViewMode={imageViewMode}
+                onImageViewModeChange={setImageViewMode}
+                variant="dashboard"
+              />
+            ) : null}
+            {user.role === "MEMBER" ? (
+              <div className="mb-3 grid gap-2 text-left text-xs sm:grid-cols-2">
+                <div className="rounded-lg border border-amber-300/35 bg-amber-500/10 px-3 py-2 text-amber-100">
+                  <p className="font-semibold text-amber-200">Contract (lock-in)</p>
+                  {user.fullMembershipExpiry || user.membershipExpiry ? (
+                    <p className="mt-1">
+                      {(() => {
+                        const end = new Date(user.fullMembershipExpiry ?? user.membershipExpiry ?? "");
+                        const days = differenceInCalendarDays(end, new Date());
+                        if (days < 0) return `Ended — ${format(end, "MMM d, yyyy")}. Contact admin to renew contract.`;
+                        if (days <= 7) return `Ending soon — ${format(end, "MMM d, yyyy")}.`;
+                        return `Active until ${format(end, "MMM d, yyyy")}.`;
+                      })()}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-slate-300">Contract dates will appear after your membership is set up.</p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-3 py-2 text-cyan-100">
+                  <p className="font-semibold text-cyan-200">Monthly gym access</p>
+                  {user.monthlyExpiryDate ? (
+                    <p className="mt-1">
+                      {(() => {
+                        const end = new Date(user.monthlyExpiryDate);
+                        const days = differenceInCalendarDays(end, new Date());
+                        if (days < 0)
+                          return `Expired (${format(end, "MMM d, yyyy")}) — settle monthly fee with admin before scanning in.`;
+                        if (days <= 7) return `Due soon — valid until ${format(end, "MMM d, yyyy")}.`;
+                        return `Active until ${format(end, "MMM d, yyyy")}.`;
+                      })()}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-slate-300">Monthly cycle shows after admin records a monthly payment.</p>
+                  )}
+                </div>
+              </div>
+            ) : user.membershipExpiry ? (
               <p className="mb-3 text-xs text-amber-200">
                 {differenceInCalendarDays(new Date(user.membershipExpiry), new Date()) < 0
                   ? "Membership expired. Please contact admin for renewal."
@@ -219,6 +325,54 @@ export default function ClientDashboardPage() {
               <p className="mt-1 text-xs text-slate-200">Free weights and machines</p>
             </div>
           </div>
+
+          {user.role === "MEMBER" && loyalty ? (
+            <div className="scroll-reveal delay-4 rounded-xl border border-amber-300/40 bg-amber-950/30 p-4 text-left text-sm text-slate-100">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-2 font-semibold text-amber-100">
+                  <Award className="h-5 w-5 shrink-0 text-[#00d47d]" />
+                  Loyalty points
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20"
+                  onClick={() => router.push("/client/info")}
+                >
+                  Full history
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-slate-200">
+                Current balance <span className="font-semibold text-white">{loyalty.currentPoints}</span>
+                <span className="text-slate-400"> · </span>
+                Total earned {loyalty.totalEarned}
+                <span className="text-slate-400"> · </span>
+                Total used {loyalty.totalUsed}
+              </p>
+              {loyalty.recent.length > 0 ? (
+                <ul className="mt-3 space-y-1.5 text-xs text-slate-300">
+                  {loyalty.recent.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex flex-wrap justify-between gap-2 border-t border-white/10 pt-1.5 first:border-0 first:pt-0"
+                    >
+                      <span>
+                        <span className={r.points >= 0 ? "text-emerald-300" : "text-red-300"}>
+                          {r.points >= 0 ? `+${r.points}` : r.points}
+                        </span>{" "}
+                        {r.reason}
+                      </span>
+                      <span className="shrink-0 text-slate-400">{new Date(r.createdAt).toLocaleString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-slate-400">
+                  No activity yet. Points accrue from qualifying payments (every ₱100 paid = 1 point).
+                </p>
+              )}
+            </div>
+          ) : null}
         </div>
       </section>
 

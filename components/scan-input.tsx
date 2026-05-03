@@ -8,7 +8,7 @@ import { RoleBadge } from "@/components/role-badge";
 type ScanState =
   | { type: "idle" }
   | { type: "processing" }
-  | { type: "success"; name: string; role: UserRole; timeIn: string; date: string }
+  | { type: "success"; name: string; role: UserRole; mode: "TIME_IN" | "TIME_OUT"; timeIn: string; timeOut?: string | null; date: string }
   | { type: "error"; message: string }
   | { type: "warning"; message: string };
 
@@ -17,7 +17,9 @@ type ScanSuccessPayload = {
   firstName: string;
   lastName: string;
   role: UserRole;
+  action?: "TIME_IN" | "TIME_OUT";
   timeIn: string;
+  timeOut?: string | null;
   scannedAt: string;
 };
 
@@ -78,7 +80,8 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
       const data = (await res.json()) as
         | {
             success: true;
-            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string };
+            action?: "TIME_IN" | "TIME_OUT";
+            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; timeOut?: string | null; scannedAt: string };
           }
         | { success: false; error: string; lastScanTime?: string; details?: string };
 
@@ -88,20 +91,27 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
           firstName: data.user.firstName,
           lastName: data.user.lastName,
           role: data.user.role,
+            action: data.action,
           timeIn: data.user.timeIn,
+            timeOut: data.user.timeOut,
           scannedAt: data.user.scannedAt,
         });
         setState({
           type: "success",
           name: `${data.user.firstName} ${data.user.lastName}`,
           role: data.user.role,
+          mode: data.action === "TIME_OUT" ? "TIME_OUT" : "TIME_IN",
           timeIn: data.user.timeIn,
+          timeOut: data.user.timeOut,
           date: data.user.scannedAt,
         });
         reset(3000);
-      } else if (res.status === 409 && !data.success) {
-        setState({ type: "warning", message: `Already logged today at ${data.lastScanTime ?? "earlier"}` });
-        reset(3000);
+      } else if (res.status === 429 && !data.success) {
+        setState({ type: "warning", message: `Duplicate scan blocked. Last log at ${data.lastScanTime ?? "a moment ago"}.` });
+        reset(2500);
+      } else if (res.status === 403 && !data.success) {
+        setState({ type: "warning", message: data.error || "Attendance scan blocked." });
+        reset(3200);
       } else {
         setState({
           type: "error",
@@ -174,11 +184,11 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
           <div className="flex items-center justify-center">
             <CheckCircle2 className="h-10 w-10 text-white" />
           </div>
-          <p className="text-xl font-bold sm:text-2xl">Welcome, {state.name}</p>
+          <p className="text-xl font-bold sm:text-2xl">{state.mode === "TIME_OUT" ? "Time-out saved" : "Welcome"}, {state.name}</p>
           <div className="flex justify-center">
             <RoleBadge role={state.role} />
           </div>
-          <p>Time logged: {state.timeIn}</p>
+          <p>{state.mode === "TIME_OUT" ? `Time out: ${state.timeOut ?? "-"}` : `Time in: ${state.timeIn}`}</p>
           <p>Date: {state.date}</p>
         </div>
       )}

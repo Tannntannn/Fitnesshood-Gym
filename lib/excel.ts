@@ -14,6 +14,7 @@ export function generateExcel(data: AttendanceWithUser[], sheetName: string): Bu
     Date: format(new Date(item.date), "MMMM d, yyyy"),
     Day: item.dayOfWeek,
     "Time In": item.timeIn,
+    "Time Out": item.timeOut ?? "Inside",
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = [
@@ -24,6 +25,7 @@ export function generateExcel(data: AttendanceWithUser[], sheetName: string): Bu
     { wch: 14 },
     { wch: 18 },
     { wch: 10 },
+    { wch: 12 },
     { wch: 12 },
   ];
   const wb = XLSX.utils.book_new();

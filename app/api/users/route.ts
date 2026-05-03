@@ -4,8 +4,11 @@ import { addDays } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { buildQrString, generateQrBase64 } from "@/lib/qr";
 import { nowInPH } from "@/lib/time";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 export async function GET(request: Request) {
+  const session = await requireAdminSession();
+  if (!session) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const searchParams = new URL(request.url).searchParams;
     const includeQr = searchParams.get("includeQr") === "true";
@@ -28,6 +31,7 @@ export async function GET(request: Request) {
               role: true,
               remainingBalance: true,
               membershipTier: true,
+              addOnSubscriptions: { select: { addonName: true } },
             }
           : {
               id: true,
@@ -77,6 +81,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const session = await requireAdminSession();
+  if (!session) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const body = (await request.json()) as {
       firstName?: string;

@@ -2,15 +2,16 @@ import { NextResponse } from "next/server";
 import { PaymentMethod, Prisma } from "@prisma/client";
 import { addDays } from "date-fns";
 import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
 import {
   computeDaysLeft,
-  extendMonthlyExpiry,
   formatPesoLabel,
   resolveMembershipStatus,
   sanitizePaymentReference,
   toMoney,
 } from "@/lib/payment";
 import { nowInPH } from "@/lib/time";
+import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 
 type Params = { params: { id: string } };
 
@@ -19,7 +20,10 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
   if (!member || member.role !== "MEMBER") return;
 
   const latestMembershipPayment = await tx.payment.findFirst({
-    where: { userId, service: { name: "Membership" } },
+    where: {
+      userId,
+      OR: [{ transactionType: "MEMBERSHIP_CONTRACT" }, { transactionType: "LEGACY", service: { name: "Membership" } }],
+    },
     include: { service: true },
     orderBy: { paidAt: "desc" },
   });
@@ -29,9 +33,13 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
       COALESCE(SUM(p."amount"), 0) AS "totalPaid",
       COALESCE(SUM(COALESCE(p."discountAmount", 0)), 0) AS "totalDiscount"
     FROM "Payment" p
-    INNER JOIN "Service" s ON s."id" = p."serviceId"
     WHERE p."userId" = ${userId}
-      AND s."name" = 'Membership'
+      AND (
+        p."transactionType" = 'MEMBERSHIP_CONTRACT'
+        OR (p."transactionType" = 'LEGACY' AND EXISTS (
+          SELECT 1 FROM "Service" s WHERE s."id" = p."serviceId" AND s."name" = 'Membership'
+        ))
+      )
   `;
   const totals = totalsRows[0] ?? { totalPaid: 0, totalDiscount: 0 };
   const totalPaid = toMoney(String(totals.totalPaid ?? 0));
@@ -69,7 +77,7 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
     data: {
       membershipStart: contractStart,
       membershipExpiry: fullMembershipExpiry,
-      monthlyExpiryDate: extendMonthlyExpiry(member.monthlyExpiryDate),
+      monthlyExpiryDate: member.monthlyExpiryDate,
       fullMembershipExpiry,
       daysLeft,
       membershipStatus,
@@ -87,9 +95,18 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
 }
 
 export async function PATCH(request: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const body = (await request.json()) as {
       amount?: number;
+      grossAmount?: number;
+      discountType?: "NONE" | "PERCENT" | "FIXED";
+      discountPercent?: number;
+      discountFixedAmount?: number;
+      discountReason?: string | null;
       paymentMethod?: string;
       collectionStatus?: "FULLY_PAID" | "PARTIAL";
       paidAt?: string;
@@ -113,9 +130,11 @@ export async function PATCH(request: Request, { params }: Params) {
         data.grossAmount = toMoney(0);
         data.discountPercent = 0;
         data.discountAmount = toMoney(0);
+        data.discountType = "NONE";
+        data.discountFixedAmount = toMoney(0);
         data.paymentReference = null;
         data.isSplit = false;
-        data.notes = `[VOID ${new Date().toISOString()}] ${body.voidReason?.trim() || "Voided by admin."}${
+        data.notes = `[VOID ${nowInPH().toISOString()}] ${body.voidReason?.trim() || "Voided by admin."}${
           existing.notes ? ` | prev: ${existing.notes}` : ""
         }`;
         await tx.splitPayment.deleteMany({ where: { paymentId: existing.id } });
@@ -123,13 +142,35 @@ export async function PATCH(request: Request, { params }: Params) {
         if (existing.isSplit) {
           throw new Error("Split payments cannot be edited directly. Delete and re-create instead.");
         }
-        if (body.amount !== undefined) {
+        if (body.grossAmount !== undefined) {
+          const gross = Number(body.grossAmount);
+          if (!Number.isFinite(gross) || gross <= 0) throw new Error("Gross amount must be greater than zero.");
+          const dtype = body.discountType ?? "NONE";
+          if (!["NONE", "PERCENT", "FIXED"].includes(dtype)) throw new Error("Invalid discount type.");
+          const pct = dtype === "PERCENT" ? Math.trunc(Number(body.discountPercent ?? 0)) : 0;
+          const fixedRaw = dtype === "FIXED" ? Number(body.discountFixedAmount ?? 0) : 0;
+          if (dtype === "PERCENT" && (pct < 0 || pct > 100)) throw new Error("Discount percent must be between 0 and 100.");
+          if (dtype === "FIXED" && (!Number.isFinite(fixedRaw) || fixedRaw < 0)) throw new Error("Invalid fixed discount.");
+          const fixedAmt = dtype === "FIXED" ? Math.min(fixedRaw, gross) : 0;
+          const discAmt = dtype === "PERCENT" ? gross * (pct / 100) : fixedAmt;
+          const finalAmt = Math.max(gross - discAmt, 0);
+          if (finalAmt <= 0) throw new Error("Final amount must be greater than zero after discount.");
+          data.amount = toMoney(finalAmt);
+          data.grossAmount = toMoney(gross);
+          data.discountPercent = pct;
+          data.discountAmount = toMoney(discAmt);
+          data.discountType = dtype;
+          data.discountFixedAmount = toMoney(dtype === "FIXED" ? fixedAmt : 0);
+          data.discountReason = body.discountReason?.trim() || null;
+        } else if (body.amount !== undefined) {
           const amount = Number(body.amount);
           if (!Number.isFinite(amount) || amount <= 0) throw new Error("Amount must be greater than zero.");
           data.amount = toMoney(amount);
           data.grossAmount = toMoney(amount);
           data.discountPercent = 0;
           data.discountAmount = toMoney(0);
+          data.discountType = "NONE";
+          data.discountFixedAmount = toMoney(0);
         }
         if (body.paymentMethod !== undefined) {
           if (!Object.values(PaymentMethod).includes(body.paymentMethod as PaymentMethod)) {
@@ -155,8 +196,15 @@ export async function PATCH(request: Request, { params }: Params) {
         data,
       });
 
-      if (existing.user.role === "MEMBER" && existing.service.name === "Membership") {
+      if (
+        existing.user.role === "MEMBER" &&
+        (existing.transactionType === "MEMBERSHIP_CONTRACT" ||
+          (existing.transactionType === "LEGACY" && existing.service.name === "Membership"))
+      ) {
         await recomputeMemberMembership(tx, existing.userId);
+      }
+      if (existing.user.role === "MEMBER") {
+        await syncMembershipPenaltyInTx(tx, existing.userId);
       }
 
       return payment;
@@ -172,6 +220,10 @@ export async function PATCH(request: Request, { params }: Params) {
 }
 
 export async function DELETE(_: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const deleted = await prisma.$transaction(async (tx) => {
       const existing = await tx.payment.findUnique({
@@ -181,8 +233,15 @@ export async function DELETE(_: Request, { params }: Params) {
       if (!existing) throw new Error("Payment not found.");
 
       await tx.payment.delete({ where: { id: params.id } });
-      if (existing.user.role === "MEMBER" && existing.service.name === "Membership") {
+      if (
+        existing.user.role === "MEMBER" &&
+        (existing.transactionType === "MEMBERSHIP_CONTRACT" ||
+          (existing.transactionType === "LEGACY" && existing.service.name === "Membership"))
+      ) {
         await recomputeMemberMembership(tx, existing.userId);
+      }
+      if (existing.user.role === "MEMBER") {
+        await syncMembershipPenaltyInTx(tx, existing.userId);
       }
       return existing;
     });

@@ -30,11 +30,37 @@ enum PaymentCollectionStatus {
   PARTIAL
 }
 
+enum PaymentTransactionType {
+  LEGACY
+  MEMBERSHIP_CONTRACT
+  MONTHLY_FEE
+  WALK_IN
+  ADD_ON
+  OTHER
+}
+
+enum PaymentDiscountType {
+  NONE
+  PERCENT
+  FIXED
+}
+
+enum LoyaltyApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum MembershipLifecycleStatus {
   ACTIVE
   WARNING
   EXPIRED
   NO_EXPIRY
+}
+
+enum MembershipPenaltySource {
+  AUTO
+  MANUAL
 }
 
 model User {
@@ -61,6 +87,9 @@ model User {
   membershipFeeLabel String?    @db.Text
   gracePeriodEnd   DateTime?
   freezeStatus     String?      @db.Text
+  freezeStartedAt  DateTime?
+  freezeEndsAt     DateTime?
+  freezeDaysTotal  Int?
   membershipNotes  String?      @db.Text
   coachName      String?      @db.VarChar(120)
   monthlyExpiryDate DateTime?
@@ -72,12 +101,18 @@ model User {
   totalContractPrice Decimal? @db.Decimal(10, 2)
   remainingBalance Decimal?   @db.Decimal(10, 2)
   loyaltyStars   Int          @default(0)
+  membershipPenalty       Boolean                   @default(false)
+  membershipPenaltySource MembershipPenaltySource?
+  membershipPenaltyNotes  String?                   @db.Text
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   syncedAt    DateTime?
   attendance  Attendance[]
   payments    Payment[]
+  loyaltyLedger LoyaltyLedger[]
+  loyaltyClaims LoyaltyClaim[]
+  addOnSubscriptions AddOnSubscription[]
 }
 
 model Coach {
@@ -86,6 +121,25 @@ model Coach {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  commissionRemittances CoachCommissionRemittance[]
+}
+
+// Coach commission remittance: coach pays gym (manual entry).
+model CoachCommissionRemittance {
+  id               String          @id @default(cuid())
+  coachId          String
+  coach            Coach           @relation(fields: [coachId], references: [id], onDelete: Restrict)
+  amount           Decimal         @db.Decimal(10, 2)
+  paidAt           DateTime
+  paymentMethod    PaymentMethod   @default(CASH)
+  paymentReference String?         @db.VarChar(255)
+  notes            String?         @db.Text
+  recordedBy       String?         @db.VarChar(255)
+  createdAt        DateTime        @default(now())
+
+  @@index([coachId, paidAt])
+  @@index([paidAt])
 }
 
 model Attendance {
@@ -96,6 +150,8 @@ model Attendance {
   scannedAt    DateTime @default(now())
   date         DateTime
   timeIn       String
+  timeOut      String?
+  checkedOutAt DateTime?
   dayOfWeek    String
   month        Int
   year         Int
@@ -125,6 +181,7 @@ model Service {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   payments       Payment[]
+  addOnSubscriptions AddOnSubscription[]
 
   @@unique([name, tier])
   @@index([tier, isActive])
@@ -138,20 +195,32 @@ model Payment {
   service       Service        @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   amount        Decimal        @db.Decimal(10, 2)
   grossAmount   Decimal?       @db.Decimal(10, 2)
-  discountPercent Int? 
+  discountPercent Int?
   discountAmount Decimal?      @db.Decimal(10, 2)
+  discountType  PaymentDiscountType @default(NONE)
+  discountFixedAmount Decimal? @db.Decimal(10, 2)
+  discountReason String?       @db.Text
   paymentMethod PaymentMethod
   collectionStatus PaymentCollectionStatus @default(FULLY_PAID)
+  transactionType PaymentTransactionType @default(LEGACY)
+  approvedBy    String?        @db.VarChar(191)
+  recordedBy    String?        @db.VarChar(191)
   paidAt        DateTime       @default(now())
   isSplit       Boolean        @default(false)
   notes         String?        @db.Text
+  customAddOnLabel String?    @db.VarChar(200) // one-time POS add-on label (Add-on / Custom service)
+  receiptGroupId   String?    @db.VarChar(36) // same id on lines saved together → one record bubble + combined receipt
   paymentReference String?     @db.VarChar(255)
+  addOnSubscriptionId String?
+  addOnSubscription AddOnSubscription? @relation(fields: [addOnSubscriptionId], references: [id], onDelete: SetNull)
   splitPayments SplitPayment[]
+  loyaltyLedger LoyaltyLedger[]
   createdAt     DateTime       @default(now())
 
   @@index([paidAt])
   @@index([userId, paidAt])
   @@index([serviceId, paidAt])
+  @@index([addOnSubscriptionId])
 }
 
 model SplitPayment {
@@ -164,4 +233,84 @@ model SplitPayment {
   createdAt  DateTime      @default(now())
 
   @@index([paymentId])
+}
+
+model ClientAnnouncement {
+  id        String   @id @default(cuid())
+  title     String   @db.VarChar(180)
+  message   String   @db.Text
+  imageUrl  String?  @db.Text
+  isActive  Boolean  @default(true)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startsAt, endsAt])
+  @@index([updatedAt])
+}
+
+model LoyaltyLedger {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentId String?
+  payment   Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  points    Int
+  pointsEarned Int @default(0)
+  pointsDeducted Int @default(0)
+  remainingBalance Int?
+  reason    String   @db.VarChar(80)
+  reasonDetail String? @db.Text
+  transactionReference String? @db.VarChar(120)
+  adminApproval LoyaltyApprovalStatus @default(APPROVED)
+  adjustedBy String? @db.VarChar(191)
+  adjustedAt DateTime?
+  claimId String?
+  claim   LoyaltyClaim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  amountBasis Decimal? @db.Decimal(10, 2)
+  rewardUsed Boolean @default(false)
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([paymentId])
+  @@index([claimId])
+}
+
+model LoyaltyClaim {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rewardName    String   @db.VarChar(120)
+  pointsRequired Int
+  status        LoyaltyApprovalStatus @default(PENDING)
+  approvedBy    String?  @db.VarChar(191)
+  approvedAt    DateTime?
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  ledgerEntries LoyaltyLedger[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AddOnSubscription {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId    String?
+  service      Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  addonName    String   @db.VarChar(120)
+  dueDate      DateTime?
+  status       String   @default("ACTIVE") @db.VarChar(20)
+  lastPaymentAt DateTime?
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  payments     Payment[]
+
+  @@index([userId, status])
+  @@index([dueDate])
 }

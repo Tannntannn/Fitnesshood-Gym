@@ -25,12 +25,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
+# local env files (never commit real secrets)
 .env*.local
 .env
 .env.development
 .env.production
 .env.test
+
+# Root-level PDFs are often personal scans or vendor docs — keep out of git by default
+/*.pdf
 
 # vercel
 .vercel

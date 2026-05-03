@@ -1,7 +1,11 @@
 import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
+import { getClientSessionCookieName, verifyClientSession } from "@/lib/client-session";
 
 const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_SOURCE_SIZE = 2 * 1024 * 1024;
@@ -11,6 +15,26 @@ const WEBP_QUALITY = 78;
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
+    const admin = await requireAdminSession();
+    const clientCookie = cookies().get(getClientSessionCookieName())?.value;
+    const clientUserId = verifyClientSession(clientCookie);
+    let allowed = Boolean(admin || clientUserId);
+    if (!allowed) {
+      const pendingEmail = String(formData.get("pendingEmail") ?? "")
+        .trim()
+        .toLowerCase();
+      if (pendingEmail) {
+        const pending = await prisma.user.findFirst({
+          where: { email: pendingEmail, memberPasswordHash: null },
+          select: { id: true },
+        });
+        allowed = Boolean(pending);
+      }
+    }
+    if (!allowed) {
+      return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+    }
+
     const file = formData.get("file");
     if (!(file instanceof File)) {
       return NextResponse.json({ success: false, error: "No file uploaded." }, { status: 400 });

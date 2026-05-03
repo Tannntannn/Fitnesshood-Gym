@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 type Params = { params: { id: string } };
 
 export async function PATCH(request: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const body = (await request.json()) as { name?: string; isActive?: boolean };
     const rows = await prisma.$queryRaw<Array<{ id: string; name: string; isActive: boolean }>>`
@@ -30,6 +35,10 @@ export async function PATCH(request: Request, { params }: Params) {
 }
 
 export async function DELETE(_: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const coachRows = await prisma.$queryRaw<Array<{ id: string; name: string }>>`
       SELECT "id", "name"
@@ -54,6 +63,18 @@ export async function DELETE(_: Request, { params }: Params) {
           success: false,
           error: "Cannot delete coach.",
           details: `Unassign ${assignedCount} member(s) from ${coach.name} first.`,
+        },
+        { status: 409 },
+      );
+    }
+
+    const remittanceCount = await prisma.coachCommissionRemittance.count({ where: { coachId: params.id } });
+    if (remittanceCount > 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Cannot delete coach.",
+          details: `This coach has ${remittanceCount} commission remittance record(s). Remove or reassign history before deleting.`,
         },
         { status: 409 },
       );

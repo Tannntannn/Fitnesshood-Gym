@@ -13,6 +13,24 @@ type ManualCandidate = {
   firstName: string;
   lastName: string;
   role: UserRole;
+  canScan?: boolean;
+  blockReason?: string | null;
+};
+
+type AttendanceSummary = {
+  totalAll: number;
+  totals: Record<UserRole, number>;
+  activeTotals?: Record<UserRole, number>;
+  currentPopulation?: number;
+  peakHours?: Array<{ hour: string; count: number }>;
+  recent: Array<{
+    id: string;
+    scannedAt: string;
+    timeIn: string;
+    timeOut?: string | null;
+    roleSnapshot: UserRole;
+    user: { firstName: string; lastName: string };
+  }>;
 };
 
 export default function DashboardPage() {
@@ -26,6 +44,7 @@ export default function DashboardPage() {
   const [manualUserId, setManualUserId] = useState("");
   const [searchingManual, setSearchingManual] = useState(false);
   const [manualSaving, setManualSaving] = useState(false);
+  const [summary, setSummary] = useState<AttendanceSummary | null>(null);
 
   const showNotice = useCallback((type: "success" | "error", message: string) => {
     setNotice({ type, message });
@@ -40,6 +59,30 @@ export default function DashboardPage() {
     },
     [],
   );
+
+  useEffect(() => {
+    const loadSummary = async () => {
+      try {
+        const res = await fetch("/api/attendance/summary");
+        const json = (await res.json()) as { success?: boolean; data?: AttendanceSummary };
+        if (json.success) setSummary(json.data ?? null);
+      } catch {
+        // keep last snapshot
+      }
+    };
+    loadSummary();
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") loadSummary();
+    }, 90000);
+    const onFocus = () => loadSummary();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, []);
 
   useEffect(() => {
     setClock(nowInPH());
@@ -83,6 +126,11 @@ export default function DashboardPage() {
       showNotice("error", "Select a client from manual search first.");
       return;
     }
+    const selected = manualCandidates.find((candidate) => candidate.id === userId);
+    if (selected && selected.canScan === false) {
+      showNotice("error", selected.blockReason || "This client is currently not eligible for attendance scan.");
+      return;
+    }
     setManualSaving(true);
     try {
       const res = await fetch("/api/attendance/scan", {
@@ -93,20 +141,25 @@ export default function DashboardPage() {
       const data = (await res.json()) as
         | {
             success: true;
-            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string };
+            action?: "TIME_IN" | "TIME_OUT";
+            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; timeOut?: string | null; scannedAt: string };
           }
         | { success: false; error: string; lastScanTime?: string };
 
       if (res.status === 200 && data.success) {
         setPreviewUser({ id: data.user.id, firstName: data.user.firstName, lastName: data.user.lastName });
-        showNotice("success", `Manual time-in saved for ${data.user.firstName} ${data.user.lastName}.`);
+        if ((data.action ?? "TIME_IN") === "TIME_OUT") {
+          showNotice("success", `Manual time-out saved for ${data.user.firstName} ${data.user.lastName}.`);
+        } else {
+          showNotice("success", `Manual time-in saved for ${data.user.firstName} ${data.user.lastName}.`);
+        }
         setManualSearch("");
         setManualUserId("");
         setManualCandidates([]);
         return;
       }
-      if (res.status === 409 && !data.success) {
-        showNotice("error", `Already logged today at ${data.lastScanTime ?? "earlier"}.`);
+      if (res.status === 429 && !data.success) {
+        showNotice("error", `Duplicate scan blocked. Last log at ${data.lastScanTime ?? "a moment ago"}.`);
         return;
       }
       showNotice("error", !data.success ? data.error : "Failed to save manual time-in.");
@@ -135,7 +188,85 @@ export default function DashboardPage() {
         <p className="text-sm text-slate-500">
           Scan station and client preview for front desk workflow.
         </p>
+        {summary ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="rounded bg-slate-100 px-2 py-1 text-slate-700">Today total: {summary.totalAll}</span>
+            <span className="rounded bg-fuchsia-100 px-2 py-1 text-fuchsia-700">
+              Current population: {summary.currentPopulation ?? summary.totalAll}
+            </span>
+            {summary.activeTotals ? (
+              <>
+                <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700">Inside Members: {summary.activeTotals.MEMBER}</span>
+                <span className="rounded bg-blue-50 px-2 py-1 text-blue-700">Inside Non-member: {summary.activeTotals.NON_MEMBER}</span>
+              </>
+            ) : null}
+            <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-700">Members: {summary.totals.MEMBER}</span>
+            <span className="rounded bg-blue-100 px-2 py-1 text-blue-700">Non-member: {summary.totals.NON_MEMBER}</span>
+            <span className="rounded bg-amber-100 px-2 py-1 text-amber-700">Walk-in Student: {summary.totals.WALK_IN}</span>
+            <span className="rounded bg-violet-100 px-2 py-1 text-violet-700">
+              Walk-in Regular: {summary.totals.WALK_IN_REGULAR}
+            </span>
+            {summary.peakHours?.[0] ? (
+              <span className="rounded bg-cyan-100 px-2 py-1 text-cyan-700">
+                Peak hour: {summary.peakHours[0].hour}:00 ({summary.peakHours[0].count})
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
+      <Card className="surface-card border border-slate-200 p-3 sm:p-4">
+        <div className="mb-2">
+          <h3 className="text-sm font-semibold text-slate-900">Manual attendance fallback</h3>
+          <p className="text-xs text-slate-500">
+            When the scanner fails: search the client, then save. Same rules as QR — first save today is <span className="font-medium text-slate-700">time in</span>; if they&apos;re
+            already checked in, the next save is <span className="font-medium text-slate-700">time out</span>.
+          </p>
+        </div>
+        <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto]">
+          <input
+            value={manualSearch}
+            onChange={(e) => {
+              const next = e.target.value;
+              setManualSearch(next);
+              const matched = manualCandidates.find((c) => `${c.firstName} ${c.lastName}` === next);
+              setManualUserId(matched?.id ?? "");
+            }}
+            list="manual-client-options-dashboard"
+            placeholder="Search client name"
+            className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/25"
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            onClick={submitManualAttendance}
+            disabled={manualSaving}
+            className="h-10 rounded-md bg-[#1e3a5f] px-4 text-sm font-semibold text-white hover:bg-[#1e3a5f]/90 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {manualSaving ? "Saving..." : "Save time-in / time-out"}
+          </button>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event("attendance-focus-scanner"))}
+            className="h-10 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Refocus Scanner
+          </button>
+        </div>
+        <datalist id="manual-client-options-dashboard">
+          {manualCandidates.map((candidate) => (
+            <option key={candidate.id} value={`${candidate.firstName} ${candidate.lastName}`} />
+          ))}
+        </datalist>
+        <p className="mt-1 text-[11px] text-slate-500">
+          {searchingManual ? "Searching..." : manualCandidates.length > 0 ? `${manualCandidates.length} match(es)` : "Type at least 2 letters to search"}
+        </p>
+        {manualCandidates.some((candidate) => candidate.canScan === false) ? (
+          <p className="mt-1 text-[11px] text-amber-700">
+            Some matches are blocked (freeze or expired monthly fee) and cannot be saved until account is settled.
+          </p>
+        ) : null}
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <div
@@ -194,51 +325,6 @@ export default function DashboardPage() {
           </div>
         </Card>
       </div>
-
-      <Card className="surface-card border border-slate-200 p-3 sm:p-4">
-        <div className="mb-2">
-          <h3 className="text-sm font-semibold text-slate-900">Manual Attendance Fallback</h3>
-          <p className="text-xs text-slate-500">Use this only when scanner cannot read. This section is below the scanner area.</p>
-        </div>
-        <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto]">
-          <input
-            value={manualSearch}
-            onChange={(e) => {
-              const next = e.target.value;
-              setManualSearch(next);
-              const matched = manualCandidates.find((c) => `${c.firstName} ${c.lastName}` === next);
-              setManualUserId(matched?.id ?? "");
-            }}
-            list="manual-client-options-dashboard"
-            placeholder="Search client name"
-            className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/25"
-            autoComplete="off"
-          />
-          <button
-            type="button"
-            onClick={submitManualAttendance}
-            disabled={manualSaving}
-            className="h-10 rounded-md bg-[#1e3a5f] px-4 text-sm font-semibold text-white hover:bg-[#1e3a5f]/90 disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {manualSaving ? "Saving..." : "Save Time-in"}
-          </button>
-          <button
-            type="button"
-            onClick={() => window.dispatchEvent(new Event("attendance-focus-scanner"))}
-            className="h-10 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          >
-            Refocus Scanner
-          </button>
-        </div>
-        <datalist id="manual-client-options-dashboard">
-          {manualCandidates.map((candidate) => (
-            <option key={candidate.id} value={`${candidate.firstName} ${candidate.lastName}`} />
-          ))}
-        </datalist>
-        <p className="mt-1 text-[11px] text-slate-500">
-          {searchingManual ? "Searching..." : manualCandidates.length > 0 ? `${manualCandidates.length} match(es)` : "Type at least 2 letters to search"}
-        </p>
-      </Card>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import {
+  Bell,
   ChevronDown,
   ClipboardList,
   Home,
@@ -16,19 +17,31 @@ import {
   UsersRound,
   WalletCards,
   Wallet,
+  Trophy,
+  BarChart3,
+  HandCoins,
+  Receipt,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+const coachLinks = [
+  { href: "/coaches", label: "Coach roster", icon: ShieldUser },
+  { href: "/coaches/remittances", label: "Remittance records", icon: Receipt },
+];
 
 const links = [
   { href: "/dashboard", label: "Dashboard & Scan", icon: Home },
   { href: "/register", label: "Register User", icon: UserPlus2 },
   { href: "/payments", label: "Payments", icon: Wallet },
   { href: "/services", label: "Services", icon: Package },
-  { href: "/coaches", label: "Coaches", icon: ShieldUser },
   { href: "/users", label: "All Users", icon: Users },
   { href: "/members-management", label: "Members Management", icon: WalletCards },
+  { href: "/announcements", label: "Announcements", icon: Bell },
+  { href: "/addons", label: "Add-ons", icon: HandCoins },
+  { href: "/loyalty", label: "Loyalty Ledger", icon: Trophy },
+  { href: "/reports", label: "Balance Reports", icon: BarChart3 },
 ];
 
 const attendanceLinks = [
@@ -46,6 +59,7 @@ type SidebarProps = {
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const attendanceOpen = pathname.startsWith("/attendance");
+  const coachesOpen = pathname.startsWith("/coaches");
   return (
     <>
       <div
@@ -105,6 +119,42 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </Link>
               );
             })}
+
+            <details open={coachesOpen} className="group rounded-lg bg-white/5">
+              <summary
+                className={cn(
+                  "cursor-pointer list-none rounded-lg px-3 py-2 text-sm text-slate-200 transition-all duration-200 hover:bg-white/10 hover:text-white",
+                  coachesOpen && "bg-[#1e3a5f] text-white shadow-sm",
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-2.5">
+                    <ShieldUser className="h-4 w-4 shrink-0" />
+                    <span>Coaches</span>
+                  </span>
+                  <ChevronDown className="h-4 w-4 text-slate-300 transition-transform group-open:rotate-180" />
+                </div>
+              </summary>
+              <div className="mt-1 max-h-56 space-y-1 overflow-y-auto pb-1 pr-1">
+                {coachLinks.map((link) => {
+                  const Icon = link.icon;
+                  return (
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      onClick={onClose}
+                      className={cn(
+                        "ml-2 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white",
+                        pathname === link.href && "bg-[#1e3a5f] text-white shadow-sm",
+                      )}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span>{link.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </details>
 
             <details open={attendanceOpen} className="group rounded-lg bg-white/5">
               <summary

@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { differenceInCalendarDays, format } from "date-fns";
 import { UserRole } from "@prisma/client";
-import { CircleUserRound, Home } from "lucide-react";
+import { CircleUserRound, Home, Megaphone } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ClientAnnouncementBanner } from "@/components/client-announcement-banner";
 import { formatRoleLabel } from "@/lib/role-labels";
 import { getMembershipStatus } from "@/lib/membership";
+import { LOYALTY_VOIDED_ENTRY_REASON, parseLoyaltyVoidAdminReason } from "@/lib/loyalty-void";
 
 type MemberUser = {
   id: string;
@@ -22,6 +24,8 @@ type MemberUser = {
   qrCodeImage: string;
   membershipStart: string | null;
   membershipExpiry: string | null;
+  fullMembershipExpiry?: string | null;
+  monthlyExpiryDate?: string | null;
   profileImageUrl: string | null;
   membershipTier?: string | null;
   lockInLabel?: string | null;
@@ -30,6 +34,8 @@ type MemberUser = {
   totalContractPrice?: string | null;
   remainingBalance?: string | null;
   coachName?: string | null;
+  freezeStatus?: string | null;
+  freezeEndsAt?: string | null;
 };
 
 type AttendanceRow = {
@@ -44,12 +50,38 @@ type PaymentRow = {
   grossAmount?: string | null;
   discountPercent?: number | null;
   discountAmount?: string | null;
+  discountType?: string;
+  transactionType?: string;
   paymentMethod: string;
   collectionStatus: "FULLY_PAID" | "PARTIAL";
   paidAt: string;
   paymentReference?: string | null;
   splitPayments?: Array<{ method: string; reference?: string | null }>;
   service: { name: string; tier: string };
+};
+
+type ClientAnnouncement = {
+  id: string;
+  title: string;
+  message: string;
+  imageUrl?: string | null;
+  updatedAt: string;
+};
+
+type LoyaltyRow = {
+  id: string;
+  points: number;
+  pointsEarned?: number;
+  pointsDeducted?: number;
+  remainingBalance?: number | null;
+  reason: string;
+  reasonDetail?: string | null;
+  transactionReference?: string | null;
+  adminApproval?: string;
+  amountBasis?: string | null;
+  rewardUsed: boolean;
+  notes?: string | null;
+  createdAt: string;
 };
 
 function formatPaymentReference(row: PaymentRow): string {
@@ -70,12 +102,27 @@ export default function ClientInfoPage() {
   const [error, setError] = useState("");
   const [uploadingImage, setUploadingImage] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
+  const [loyaltyRows, setLoyaltyRows] = useState<LoyaltyRow[]>([]);
+  const [loyaltyPage, setLoyaltyPage] = useState(1);
+  const [loyaltyHasNext, setLoyaltyHasNext] = useState(false);
+  const [currentStars, setCurrentStars] = useState(0);
+  const [totalEarned, setTotalEarned] = useState(0);
+  const [totalUsed, setTotalUsed] = useState(0);
+  const [announcement, setAnnouncement] = useState<ClientAnnouncement | null>(null);
 
   useEffect(() => {
     const load = async () => {
-      const res = await fetch("/api/client/me");
+      const res = await fetch("/api/client/me", { cache: "no-store" });
       const json = (await res.json()) as
-        | { success: true; data: { user: MemberUser; attendance: AttendanceRow[]; payments: PaymentRow[] } }
+        | {
+            success: true;
+            data: {
+              user: MemberUser;
+              attendance: AttendanceRow[];
+              payments: PaymentRow[];
+              announcement?: ClientAnnouncement | null;
+            };
+          }
         | { success: false; error: string };
 
       if (!json.success) {
@@ -90,12 +137,13 @@ export default function ClientInfoPage() {
       setUser(json.data.user);
       setAttendance(json.data.attendance);
       setPayments(json.data.payments ?? []);
+      setAnnouncement(json.data.announcement ?? null);
     };
 
     load();
     const id = setInterval(() => {
       if (document.visibilityState === "visible") load();
-    }, 60000);
+    }, 120000);
     const onFocus = () => load();
     const onVisibility = () => {
       if (document.visibilityState === "visible") load();
@@ -108,6 +156,26 @@ export default function ClientInfoPage() {
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [router]);
+
+  useEffect(() => {
+    const loadLoyalty = async () => {
+      const res = await fetch(`/api/client/loyalty?page=${loyaltyPage}&limit=8`);
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: LoyaltyRow[];
+        summary?: { currentPoints?: number; currentStars?: number; totalEarned?: number; totalUsed?: number };
+        meta?: { hasNextPage?: boolean };
+      };
+      if (!json.success) return;
+      setCurrentStars(Number(json.summary?.currentPoints ?? json.summary?.currentStars ?? 0));
+      setTotalEarned(Number(json.summary?.totalEarned ?? 0));
+      setTotalUsed(Number(json.summary?.totalUsed ?? 0));
+      if (loyaltyPage === 1) setLoyaltyRows(json.data ?? []);
+      else setLoyaltyRows((prev) => [...prev, ...(json.data ?? [])]);
+      setLoyaltyHasNext(Boolean(json.meta?.hasNextPage));
+    };
+    loadLoyalty();
+  }, [loyaltyPage]);
 
   useEffect(() => {
     if (!user) return;
@@ -137,7 +205,15 @@ export default function ClientInfoPage() {
   }, [user?.membershipExpiry]);
   const membershipStatus = useMemo(() => getMembershipStatus(user?.membershipExpiry), [user?.membershipExpiry]);
   const latestMembershipPayment = useMemo(
-    () => payments.find((row) => row.service.name === "Membership") ?? null,
+    () =>
+      payments.find(
+        (row) =>
+          row.service.name === "Membership" &&
+          row.transactionType !== "MONTHLY_FEE" &&
+          (row.transactionType === "MEMBERSHIP_CONTRACT" ||
+            row.transactionType === "LEGACY" ||
+            row.transactionType === undefined),
+      ) ?? null,
     [payments],
   );
 
@@ -174,6 +250,15 @@ export default function ClientInfoPage() {
               <Home className="mr-1.5 h-3.5 w-3.5" />
               About
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-8 border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20"
+              onClick={() => router.push("/client/news")}
+            >
+              <Megaphone className="mr-1.5 h-3.5 w-3.5" />
+              Announcements
+            </Button>
             <Button type="button" className="h-8 bg-[#00d47d] px-3 text-xs font-semibold text-[#0b1320] hover:bg-[#00d47d]/90">
               <CircleUserRound className="mr-1.5 h-3.5 w-3.5" />
               Personal Information
@@ -198,7 +283,9 @@ export default function ClientInfoPage() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/landing%20image.jpg" alt="Info background" className="absolute inset-0 h-full w-full object-contain opacity-60" />
         <div className="absolute inset-0 bg-gradient-to-b from-[#0b1320]/80 to-[#0b1320]/85" />
-        <div className="mx-auto grid min-h-[calc(100vh-72px)] w-full max-w-6xl content-start gap-3 pt-2 lg:grid-cols-5 lg:content-center">
+        <div className="relative z-10 mx-auto min-h-[calc(100vh-72px)] w-full max-w-6xl space-y-4 px-4 pb-8 pt-4 md:px-6">
+          {announcement ? <ClientAnnouncementBanner announcement={announcement} variant="info" /> : null}
+          <div className="grid gap-3 lg:grid-cols-5 lg:items-start">
           <Card className="scroll-reveal delay-1 surface-card bg-black/50 p-4 text-white ring-white/20 backdrop-blur-sm lg:col-span-2">
             <h3 className="text-xl font-bold tracking-tight">Gym Member Info</h3>
             <div className="mt-3 flex items-start gap-3">
@@ -308,9 +395,29 @@ export default function ClientInfoPage() {
                   <p className="mt-1 font-semibold">{user.membershipStart ? format(new Date(user.membershipStart), "MMM d, yyyy") : "N/A"}</p>
                 </div>
                 <div className="rounded-lg border border-white/20 bg-black/30 p-2">
-                  <p className="text-slate-300">Expiry</p>
-                  <p className="mt-1 font-semibold">{user.membershipExpiry ? format(new Date(user.membershipExpiry), "MMM d, yyyy") : "N/A"}</p>
+                  <p className="text-slate-300">Contract end</p>
+                  <p className="mt-1 font-semibold">
+                    {user.fullMembershipExpiry || user.membershipExpiry
+                      ? format(new Date(user.fullMembershipExpiry ?? user.membershipExpiry ?? ""), "MMM d, yyyy")
+                      : "N/A"}
+                  </p>
                 </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-center text-xs">
+                  <div className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 p-2">
+                    <p className="text-cyan-200">Monthly access until</p>
+                    <p className="mt-1 font-semibold text-cyan-50">
+                      {user.monthlyExpiryDate ? format(new Date(user.monthlyExpiryDate), "MMM d, yyyy") : "N/A"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-violet-300/30 bg-violet-500/10 p-2">
+                    <p className="text-violet-200">Freeze</p>
+                    <p className="mt-1 font-semibold text-violet-50">
+                      {user.freezeStatus || user.freezeEndsAt
+                        ? `${user.freezeStatus ?? "Active"}${user.freezeEndsAt ? ` · ends ${format(new Date(user.freezeEndsAt), "MMM d, yyyy")}` : ""}`
+                        : "None"}
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -421,28 +528,36 @@ export default function ClientInfoPage() {
                             {formatPaymentReference(row)}
                           </td>
                           <td className="px-4 py-2.5 text-[11px] text-slate-300">
-                            {Number(row.discountPercent ?? 0) > 0
-                              ? `${Number(row.discountPercent)}% (${Number(row.discountAmount ?? 0).toFixed(2)})`
-                              : "—"}
+                            {row.discountType === "FIXED" && Number(row.discountAmount ?? 0) > 0
+                              ? `Fixed ₱${Number(row.discountAmount).toFixed(2)}`
+                              : Number(row.discountPercent ?? 0) > 0
+                                ? `${Number(row.discountPercent)}% (${Number(row.discountAmount ?? 0).toFixed(2)})`
+                                : "—"}
                           </td>
                           <td className="px-4 py-2.5">
                             {row.service.name === "Membership" ? (
-                              <span
-                                className={`rounded px-2 py-1 text-[11px] font-medium ${
-                                  row.collectionStatus === "PARTIAL"
-                                    ? "border border-amber-300/50 bg-amber-500/20 text-amber-100"
-                                    : "border border-emerald-300/50 bg-emerald-500/20 text-emerald-100"
-                                }`}
-                              >
-                                {row.collectionStatus === "PARTIAL" ? "Partial" : "Fully Paid"}
-                              </span>
+                              row.transactionType === "MONTHLY_FEE" ? (
+                                <span className="rounded border border-cyan-300/50 bg-cyan-500/20 px-2 py-1 text-[11px] font-medium text-cyan-100">
+                                  Monthly fee
+                                </span>
+                              ) : (
+                                <span
+                                  className={`rounded px-2 py-1 text-[11px] font-medium ${
+                                    row.collectionStatus === "PARTIAL"
+                                      ? "border border-amber-300/50 bg-amber-500/20 text-amber-100"
+                                      : "border border-emerald-300/50 bg-emerald-500/20 text-emerald-100"
+                                  }`}
+                                >
+                                  {row.collectionStatus === "PARTIAL" ? "Partial" : "Fully Paid"}
+                                </span>
+                              )
                             ) : (
                               <span className="text-slate-300">N/A</span>
                             )}
                           </td>
                           <td className="px-4 py-2.5 text-right">
                             {Number(row.amount).toFixed(2)}
-                            {Number(row.discountPercent ?? 0) > 0 ? (
+                            {(Number(row.discountPercent ?? 0) > 0 || Number(row.discountAmount ?? 0) > 0) ? (
                               <p className="text-[10px] text-slate-400">
                                 from {Number(row.grossAmount ?? row.amount).toFixed(2)}
                               </p>
@@ -455,7 +570,72 @@ export default function ClientInfoPage() {
                 </table>
               </div>
             </div>
+
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Loyalty History</h3>
+                <span className="text-xs text-emerald-300">
+                  Current points: {currentStars} | Total earned: {totalEarned} | Total used: {totalUsed}
+                </span>
+              </div>
+              <div className="space-y-2 rounded-xl border border-white/20 bg-black/25 p-3">
+                {loyaltyRows.length === 0 ? (
+                  <p className="text-xs text-slate-300">No loyalty activity yet.</p>
+                ) : (
+                  loyaltyRows.map((row) => {
+                    const voided = row.reason === LOYALTY_VOIDED_ENTRY_REASON;
+                    const voidNote = parseLoyaltyVoidAdminReason(row.notes);
+                    return (
+                    <div
+                      key={row.id}
+                      className={`rounded-lg border border-white/10 bg-black/20 p-2 text-xs ${
+                        voided ? "opacity-60" : ""
+                      }`}
+                    >
+                      <p>
+                        <span
+                          className={`${
+                            voided
+                              ? "text-slate-400 line-through"
+                              : row.points >= 0
+                                ? "text-emerald-300"
+                                : "text-red-300"
+                          }`}
+                        >
+                          {row.points >= 0 ? "+" : ""}
+                          {row.points}
+                        </span>{" "}
+                        {row.reason}
+                        {voided ? (
+                          <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-200">
+                            Voided
+                          </span>
+                        ) : null}
+                      </p>
+                      {voidNote ? <p className="mt-1 text-[10px] text-amber-200/90">Reason: {voidNote}</p> : null}
+                      <p className="text-slate-400">
+                        Ref: {row.transactionReference ?? "—"} | Earned: {row.pointsEarned ?? 0} | Deducted: {row.pointsDeducted ?? 0} | Remaining:{" "}
+                        {row.remainingBalance ?? "—"}
+                      </p>
+                      <p className="text-slate-400">{new Date(row.createdAt).toLocaleString()}</p>
+                      {row.notes ? <p className="text-slate-300">{row.notes}</p> : null}
+                    </div>
+                    );
+                  })
+                )}
+                {loyaltyHasNext ? (
+                  <Button
+                    variant="outline"
+                    className="mt-1 border-white/20 bg-white/10 text-white hover:bg-white/20"
+                    onClick={() => setLoyaltyPage((prev) => prev + 1)}
+                  >
+                    Load more
+                  </Button>
+                ) : null}
+              </div>
+            </div>
           </Card>
+          </div>
         </div>
       </section>
     </div>

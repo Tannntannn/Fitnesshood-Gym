@@ -3,8 +3,13 @@ import { UserRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { generateExcel } from "@/lib/excel";
 import type { AttendanceWithUser } from "@/types";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 export async function GET(request: Request) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const params = new URL(request.url).searchParams;
     const role = (params.get("role") as UserRole | "all" | null) ?? "all";

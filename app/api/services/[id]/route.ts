@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 type Params = { params: { id: string } };
 
 export async function PATCH(request: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const body = (await request.json()) as {
       name?: string;
@@ -49,6 +54,10 @@ export async function PATCH(request: Request, { params }: Params) {
 }
 
 export async function DELETE(_: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const deleted = await prisma.service.delete({
       where: { id: params.id },

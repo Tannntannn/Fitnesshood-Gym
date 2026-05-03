@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { nowInPH } from "@/lib/time";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -15,6 +16,10 @@ function startOfWeekMonday(date: Date): Date {
 }
 
 export async function GET() {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const now = nowInPH();
     const todayStart = startOfDay(now);

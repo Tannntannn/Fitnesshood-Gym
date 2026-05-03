@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DashboardConfirmDialog } from "@/components/dashboard-confirm-dialog";
 
 type ServiceRow = {
   id: string;
@@ -27,6 +28,7 @@ export default function ServicesPage() {
   const [price, setPrice] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingServiceId, setDeletingServiceId] = useState<string | null>(null);
+  const [pendingDeleteService, setPendingDeleteService] = useState<ServiceRow | null>(null);
   const [error, setError] = useState("");
 
   const load = async () => {
@@ -148,19 +150,9 @@ export default function ServicesPage() {
                   variant="outline"
                   className="border-red-300 bg-white text-red-700 hover:bg-red-50"
                   disabled={deletingServiceId === service.id}
-                  onClick={async () => {
+                  onClick={() => {
                     setError("");
-                    const confirmed = window.confirm(`Delete service "${service.name}" (${service.tier})? This cannot be undone.`);
-                    if (!confirmed) return;
-                    setDeletingServiceId(service.id);
-                    const res = await fetch(`/api/services/${service.id}`, { method: "DELETE" });
-                    const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
-                    setDeletingServiceId(null);
-                    if (!json.success) {
-                      setError(json.details || json.error || "Failed to delete service.");
-                      return;
-                    }
-                    await load();
+                    setPendingDeleteService(service);
                   }}
                 >
                   {deletingServiceId === service.id ? "Deleting..." : "Delete"}
@@ -171,6 +163,42 @@ export default function ServicesPage() {
           {sorted.length === 0 ? <p className="text-sm text-slate-500">No services found yet.</p> : null}
         </div>
       </Card>
+
+      <DashboardConfirmDialog
+        open={Boolean(pendingDeleteService)}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteService(null);
+        }}
+        title="Delete service?"
+        description={
+          pendingDeleteService ? (
+            <>
+              Permanently remove{" "}
+              <span className="font-semibold text-slate-800">
+                {pendingDeleteService.name} ({pendingDeleteService.tier})
+              </span>
+              . This cannot be undone.
+            </>
+          ) : null
+        }
+        tone="danger"
+        confirmLabel="Delete service"
+        cancelLabel="Cancel"
+        loading={Boolean(pendingDeleteService && deletingServiceId === pendingDeleteService.id)}
+        onConfirm={async () => {
+          const svc = pendingDeleteService;
+          if (!svc) return;
+          setDeletingServiceId(svc.id);
+          const res = await fetch(`/api/services/${svc.id}`, { method: "DELETE" });
+          const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
+          setDeletingServiceId(null);
+          if (!json.success) {
+            setError(json.details || json.error || "Failed to delete service.");
+            return;
+          }
+          await load();
+        }}
+      />
     </div>
   );
 }

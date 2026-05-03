@@ -2,14 +2,30 @@ import { UserRole } from "@prisma/client";
 import { addDays, isAfter } from "date-fns";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { membershipPenaltySyncFromRules, syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 import { nowInPH } from "@/lib/time";
 import { jsonNoStore } from "@/lib/http";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 type Params = { params: { id: string } };
 
 export const dynamic = "force-dynamic";
 
+function normalizeFreezeStatus(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const next = value.trim().toUpperCase();
+  return next || null;
+}
+
+function isFreezeActive(status: string | null | undefined, freezeEndsAt: Date | null | undefined, now: Date): boolean {
+  if ((status ?? "").trim().toUpperCase() !== "ACTIVE") return false;
+  if (!freezeEndsAt) return true;
+  return freezeEndsAt.getTime() >= now.getTime();
+}
+
 export async function DELETE(_: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) return jsonNoStore({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     await prisma.user.delete({ where: { id: params.id } });
     return jsonNoStore({ success: true, data: { id: params.id } });
@@ -22,6 +38,8 @@ export async function DELETE(_: Request, { params }: Params) {
 }
 
 export async function GET(_: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) return jsonNoStore({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const user = await prisma.user.findUnique({ where: { id: params.id } });
     if (!user) return jsonNoStore({ success: false, error: "User not found" }, { status: 404 });
@@ -35,6 +53,8 @@ export async function GET(_: Request, { params }: Params) {
 }
 
 export async function PATCH(request: Request, { params }: Params) {
+  const session = await requireAdminSession();
+  if (!session) return jsonNoStore({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const body = (await request.json()) as {
       role?: UserRole;
@@ -56,8 +76,14 @@ export async function PATCH(request: Request, { params }: Params) {
       membershipFeeLabel?: string | null;
       gracePeriodEnd?: string | null;
       freezeStatus?: string | null;
+      freezeStartedAt?: string | null;
+      freezeEndsAt?: string | null;
+      freezeDaysTotal?: number | null;
       membershipNotes?: string | null;
       coachName?: string | null;
+      membershipPenalty?: boolean;
+      membershipPenaltyNotes?: string | null;
+      membershipPenaltyUseAuto?: boolean;
     };
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -66,6 +92,11 @@ export async function PATCH(request: Request, { params }: Params) {
 
       const now = nowInPH();
       const data: Record<string, unknown> = {};
+      const nextFreezeStatus =
+        body.freezeStatus !== undefined ? normalizeFreezeStatus(body.freezeStatus) : normalizeFreezeStatus(existing.freezeStatus);
+      const nextFreezeEndsAt = body.freezeEndsAt !== undefined ? (body.freezeEndsAt ? new Date(body.freezeEndsAt) : null) : existing.freezeEndsAt;
+      const currentlyFrozen = isFreezeActive(existing.freezeStatus, existing.freezeEndsAt, now);
+      const willBeFrozen = isFreezeActive(nextFreezeStatus, nextFreezeEndsAt, now);
 
       if (typeof body.firstName === "string") data.firstName = body.firstName;
       if (typeof body.lastName === "string") data.lastName = body.lastName;
@@ -87,6 +118,9 @@ export async function PATCH(request: Request, { params }: Params) {
       if (body.notes !== undefined) data.notes = body.notes ? body.notes.trim() : null;
       if (body.profileImageUrl !== undefined) data.profileImageUrl = body.profileImageUrl ? body.profileImageUrl.trim() : null;
       if ((body.membershipStart !== undefined || body.membershipExpiry !== undefined) && effectiveRole === "MEMBER") {
+        if (currentlyFrozen) {
+          throw new Error("FREEZE_BLOCK:Cannot update membership dates while freeze is active.");
+        }
         if (body.membershipStart !== undefined) data.membershipStart = body.membershipStart ? new Date(body.membershipStart) : null;
         if (body.membershipExpiry !== undefined) data.membershipExpiry = body.membershipExpiry ? new Date(body.membershipExpiry) : null;
       }
@@ -96,7 +130,22 @@ export async function PATCH(request: Request, { params }: Params) {
         if (body.monthlyFeeLabel !== undefined) data.monthlyFeeLabel = body.monthlyFeeLabel ? body.monthlyFeeLabel.trim() : null;
         if (body.membershipFeeLabel !== undefined) data.membershipFeeLabel = body.membershipFeeLabel ? body.membershipFeeLabel.trim() : null;
         if (body.gracePeriodEnd !== undefined) data.gracePeriodEnd = body.gracePeriodEnd ? new Date(body.gracePeriodEnd) : null;
-        if (body.freezeStatus !== undefined) data.freezeStatus = body.freezeStatus ? body.freezeStatus.trim() : null;
+        if (body.freezeStatus !== undefined) data.freezeStatus = normalizeFreezeStatus(body.freezeStatus);
+        if (body.freezeStartedAt !== undefined) data.freezeStartedAt = body.freezeStartedAt ? new Date(body.freezeStartedAt) : null;
+        if (body.freezeEndsAt !== undefined) data.freezeEndsAt = body.freezeEndsAt ? new Date(body.freezeEndsAt) : null;
+        if (body.freezeDaysTotal !== undefined) {
+          data.freezeDaysTotal =
+            typeof body.freezeDaysTotal === "number" && Number.isFinite(body.freezeDaysTotal)
+              ? Math.max(0, Math.trunc(body.freezeDaysTotal))
+              : null;
+        } else if (body.freezeStartedAt !== undefined || body.freezeEndsAt !== undefined) {
+          const start = body.freezeStartedAt ? new Date(body.freezeStartedAt) : existing.freezeStartedAt;
+          const end = body.freezeEndsAt ? new Date(body.freezeEndsAt) : existing.freezeEndsAt;
+          if (start && end) {
+            const days = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+            data.freezeDaysTotal = days;
+          }
+        }
         if (body.membershipNotes !== undefined) data.membershipNotes = body.membershipNotes ? body.membershipNotes.trim() : null;
       }
       if (typeof body.memberPassword === "string" && body.memberPassword.trim().length > 0) {
@@ -128,11 +177,17 @@ export async function PATCH(request: Request, { params }: Params) {
           data.membershipFeeLabel = null;
           data.gracePeriodEnd = null;
           data.freezeStatus = null;
+          data.freezeStartedAt = null;
+          data.freezeEndsAt = null;
+          data.freezeDaysTotal = null;
           data.membershipNotes = null;
         }
       }
 
       if (body.renewMembership && effectiveRole === "MEMBER") {
+        if (currentlyFrozen) {
+          throw new Error("FREEZE_BLOCK:Cannot renew membership while freeze is active.");
+        }
         const renewDays = Number.isFinite(body.renewDays) ? Math.max(1, Math.floor(body.renewDays as number)) : 30;
         const base =
           existing.membershipExpiry && isAfter(existing.membershipExpiry, now) ? existing.membershipExpiry : now;
@@ -140,10 +195,61 @@ export async function PATCH(request: Request, { params }: Params) {
         data.membershipExpiry = addDays(base, renewDays);
       }
 
-      const user = await tx.user.update({
+      const freezeEndedNow =
+        effectiveRole === "MEMBER" &&
+        (existing.freezeStatus ?? "").trim().toUpperCase() === "ACTIVE" &&
+        !!existing.freezeEndsAt &&
+        existing.freezeEndsAt.getTime() <= now.getTime() &&
+        (existing.freezeDaysTotal ?? 0) > 0 &&
+        !willBeFrozen;
+      if (freezeEndedNow) {
+        const freezeDays = Math.max(0, Math.trunc(existing.freezeDaysTotal ?? 0));
+        if (freezeDays > 0) {
+          const resolvedMembershipExpiry =
+            (data.membershipExpiry as Date | null | undefined) ?? existing.membershipExpiry ?? null;
+          const resolvedFullMembershipExpiry =
+            (data.fullMembershipExpiry as Date | null | undefined) ?? existing.fullMembershipExpiry ?? null;
+          const resolvedMonthlyExpiryDate =
+            (data.monthlyExpiryDate as Date | null | undefined) ?? existing.monthlyExpiryDate ?? null;
+          const resolvedGracePeriodEnd =
+            (data.gracePeriodEnd as Date | null | undefined) ?? existing.gracePeriodEnd ?? null;
+          if (resolvedMembershipExpiry) data.membershipExpiry = addDays(resolvedMembershipExpiry, freezeDays);
+          if (resolvedFullMembershipExpiry) data.fullMembershipExpiry = addDays(resolvedFullMembershipExpiry, freezeDays);
+          if (resolvedMonthlyExpiryDate) data.monthlyExpiryDate = addDays(resolvedMonthlyExpiryDate, freezeDays);
+          if (resolvedGracePeriodEnd) data.gracePeriodEnd = addDays(resolvedGracePeriodEnd, freezeDays);
+        }
+        data.freezeStatus = body.freezeStatus !== undefined ? normalizeFreezeStatus(body.freezeStatus) : "COMPLETED";
+        data.freezeStartedAt = null;
+        data.freezeEndsAt = null;
+        data.freezeDaysTotal = null;
+      }
+
+      let user = await tx.user.update({
         where: { id: params.id },
         data,
       });
+
+      if (effectiveRole === "MEMBER") {
+        const penaltyData: {
+          membershipPenalty?: boolean;
+          membershipPenaltySource?: "AUTO" | "MANUAL" | null;
+          membershipPenaltyNotes?: string | null;
+        } = {};
+        if (body.membershipPenaltyUseAuto === true) {
+          const next = membershipPenaltySyncFromRules(user);
+          penaltyData.membershipPenalty = next.membershipPenalty;
+          penaltyData.membershipPenaltySource = next.membershipPenaltySource;
+        } else if (body.membershipPenalty !== undefined) {
+          penaltyData.membershipPenalty = body.membershipPenalty;
+          penaltyData.membershipPenaltySource = "MANUAL";
+        }
+        if (body.membershipPenaltyNotes !== undefined) {
+          penaltyData.membershipPenaltyNotes = body.membershipPenaltyNotes ? body.membershipPenaltyNotes.trim() : null;
+        }
+        if (Object.keys(penaltyData).length > 0) {
+          user = await tx.user.update({ where: { id: params.id }, data: penaltyData });
+        }
+      }
 
       if (body.coachName !== undefined) {
         await tx.$executeRaw`
@@ -170,13 +276,21 @@ export async function PATCH(request: Request, { params }: Params) {
         });
       }
 
+      if (effectiveRole === "MEMBER") {
+        await syncMembershipPenaltyInTx(tx, params.id);
+      }
+
       const fresh = await tx.user.findUnique({ where: { id: params.id } });
       return fresh ?? user;
     });
     return jsonNoStore({ success: true, data: updated });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message.startsWith("FREEZE_BLOCK:")) {
+      return jsonNoStore({ success: false, error: message.replace("FREEZE_BLOCK:", "") }, { status: 409 });
+    }
     return jsonNoStore(
-      { success: false, error: "Failed to update user", details: error instanceof Error ? error.message : "Unknown error" },
+      { success: false, error: "Failed to update user", details: message },
       { status: 500 },
     );
   }

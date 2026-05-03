@@ -178,7 +178,7 @@ export default function UsersPage() {
     if (!clientPreviewUser?.id) return;
     const interval = setInterval(() => {
       if (document.visibilityState === "visible") loadPayments();
-    }, 60000);
+    }, 120000);
     const onFocus = () => loadPayments();
     const onVisibility = () => {
       if (document.visibilityState === "visible") loadPayments();

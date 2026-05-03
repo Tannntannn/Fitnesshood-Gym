@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
+import { fetchPaymentExtrasByIds } from "@/lib/payment-custom-label";
 
 export async function GET(request: Request) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const params = new URL(request.url).searchParams;
     const requestedLimit = Number(params.get("limit") ?? 1000);
@@ -34,11 +40,17 @@ export async function GET(request: Request) {
       },
     });
 
+    const extras = await fetchPaymentExtrasByIds(prisma, payments.map((p) => p.id));
+    const data = payments.map((p) => {
+      const e = extras.get(p.id) ?? { customAddOnLabel: null, receiptGroupId: null };
+      return { ...p, customAddOnLabel: e.customAddOnLabel, receiptGroupId: e.receiptGroupId };
+    });
+
     return NextResponse.json({
       success: true,
       exportedAt: new Date().toISOString(),
-      count: payments.length,
-      data: payments,
+      count: data.length,
+      data,
     });
   } catch (error) {
     return NextResponse.json(

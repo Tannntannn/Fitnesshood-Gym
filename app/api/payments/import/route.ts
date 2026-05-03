@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PaymentMethod } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { sanitizePaymentReference, toMoney } from "@/lib/payment";
+import { requireAdminSession } from "@/lib/admin-auth";
 
 type ImportSplit = {
   method?: string;
@@ -28,6 +29,10 @@ type ImportRow = {
 const METHOD_SET = new Set<string>(Object.values(PaymentMethod));
 
 export async function POST(request: Request) {
+  const session = await requireAdminSession();
+  if (!session) {
+    return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+  }
   try {
     const body = (await request.json()) as { data?: ImportRow[] };
     const rows = Array.isArray(body.data) ? body.data : [];

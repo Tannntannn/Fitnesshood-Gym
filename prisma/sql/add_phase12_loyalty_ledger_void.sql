@@ -1,0 +1,2 @@
+-- Legacy / optional: voids are implemented in-app using reason = 'VOIDED_ENTRY' + notes (no DB migration required).
+-- If you previously added voidedAt/voidedBy/voidReason columns, you may keep them unused or drop them manually.

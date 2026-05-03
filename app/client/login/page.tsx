@@ -22,21 +22,19 @@ export default function ClientLoginPage() {
 
   return (
     <div
-      className="min-h-screen grid place-items-center p-4"
+      className="min-h-screen grid place-items-center p-4 text-white"
       style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        padding: 16,
-        backgroundImage: "linear-gradient(to bottom, rgba(11,19,32,0.75), rgba(11,19,32,0.78)), url('/model%201.jpg')",
+        backgroundImage:
+          "linear-gradient(to bottom, rgba(11,19,32,0.72), rgba(11,19,32,0.78)), url('/landing%20image.jpg')",
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
     >
-      <Card
-        className="surface-card w-full max-w-md p-6 space-y-4 border-white/20 bg-[#0b1320]/75 text-white backdrop-blur-md"
-        style={{ width: "100%", maxWidth: 480, padding: 24 }}
-      >
+      <Card className="surface-card w-full max-w-md space-y-4 border-white/15 bg-[#0f1a2a]/95 p-6 text-white shadow-xl shadow-black/40 backdrop-blur-sm">
+        <div className="flex justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png?v=1" alt="" className="h-12 w-12 rounded-lg bg-white/10 object-contain p-1" />
+        </div>
         <div className="space-y-1">
           <h1 className="text-xl font-semibold text-white">{mode === "activate" ? "Activate Account" : "Login"}</h1>
           <p className="text-sm text-slate-200">
@@ -96,6 +94,7 @@ export default function ClientLoginPage() {
                 setUploadingImage(true);
                 const formData = new FormData();
                 formData.append("file", file);
+                if (email.trim()) formData.append("pendingEmail", email.trim().toLowerCase());
                 try {
                   const res = await fetch("/api/upload/profile", { method: "POST", body: formData });
                   const json = (await res.json()) as { success: boolean; url?: string };
@@ -158,10 +157,7 @@ export default function ClientLoginPage() {
             setSuccess("");
             try {
               const endpoint = mode === "activate" ? "/api/client/activate" : "/api/client/login";
-              const payload =
-                mode === "activate"
-                  ? { email, password, profileImageUrl }
-                  : { email, password };
+              const payload = mode === "activate" ? { email, password, profileImageUrl } : { email, password };
               const res = await fetch(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -182,8 +178,15 @@ export default function ClientLoginPage() {
         >
           {loading ? (mode === "activate" ? "Activating..." : "Signing in...") : mode === "activate" ? "Activate Account" : "Sign In"}
         </Button>
+
+        <p className="text-center text-[11px] leading-relaxed text-slate-500">
+          Membership details, add-ons, and gym rules live on the{" "}
+          <Link href="/#about" className="text-[#00d47d] hover:underline">
+            public home page
+          </Link>
+          .
+        </p>
       </Card>
     </div>
   );
 }
-
