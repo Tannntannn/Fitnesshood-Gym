@@ -41,6 +41,18 @@ type MemberRow = {
   coachName?: string | null;
 };
 
+// Names in the DB sometimes carry stray whitespace from older imports/registrations.
+// Normalise for display + comparisons so matches don't silently fail on a trailing space.
+function cleanName(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\s+/g, " ");
+}
+function fullName(member: { firstName: string; lastName: string }): string {
+  return cleanName(`${member.firstName} ${member.lastName}`);
+}
+function nameKey(value: string | null | undefined): string {
+  return cleanName(value).toLowerCase();
+}
+
 export default function CoachesPage() {
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rows, setRows] = useState<CoachRow[]>([]);
@@ -105,7 +117,7 @@ export default function CoachesPage() {
   const activeCoaches = useMemo(() => sorted.filter((coach) => coach.isActive), [sorted]);
   const assignedCountByCoach = useMemo(() => {
     return members.reduce<Record<string, number>>((acc, member) => {
-      const coach = (member.coachName ?? "").trim();
+      const coach = nameKey(member.coachName);
       if (!coach) return acc;
       acc[coach] = (acc[coach] ?? 0) + 1;
       return acc;
@@ -113,10 +125,10 @@ export default function CoachesPage() {
   }, [members]);
   const assignedMembersByCoach = useMemo(() => {
     return members.reduce<Record<string, Array<{ id: string; fullName: string }>>>((acc, member) => {
-      const coach = (member.coachName ?? "").trim();
+      const coach = nameKey(member.coachName);
       if (!coach) return acc;
       const current = acc[coach] ?? [];
-      current.push({ id: member.id, fullName: `${member.firstName} ${member.lastName}` });
+      current.push({ id: member.id, fullName: fullName(member) });
       acc[coach] = current;
       return acc;
     }, {});
@@ -124,9 +136,11 @@ export default function CoachesPage() {
   const unassignedMembers = useMemo(
     () =>
       members
-        .filter((member) => !(member.coachName ?? "").trim())
+        .filter((member) => !nameKey(member.coachName))
         .slice()
-        .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`)),
+        .sort((a, b) =>
+          cleanName(`${a.lastName} ${a.firstName}`).localeCompare(cleanName(`${b.lastName} ${b.firstName}`)),
+        ),
     [members],
   );
 
@@ -236,15 +250,15 @@ export default function CoachesPage() {
               <div key={coach.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
                 <div className="grid gap-2 md:grid-cols-[1fr_1.3fr_auto_auto_auto] md:items-center">
                   <div>
-                    <p className="font-medium text-slate-800">{coach.name}</p>
-                    <p className="text-[11px] text-slate-500">Assigned members: {assignedCountByCoach[coach.name] ?? 0}</p>
+                    <p className="font-medium text-slate-800">{cleanName(coach.name)}</p>
+                    <p className="text-[11px] text-slate-500">Assigned members: {assignedCountByCoach[nameKey(coach.name)] ?? 0}</p>
                     <div className="mt-2 max-h-24 overflow-auto space-y-1">
-                      {(assignedMembersByCoach[coach.name] ?? []).length === 0 ? (
+                      {(assignedMembersByCoach[nameKey(coach.name)] ?? []).length === 0 ? (
                         <p className="rounded-md border border-dashed border-slate-300 bg-white px-2 py-1 text-xs text-slate-500">
                           No assigned members yet.
                         </p>
                       ) : (
-                        (assignedMembersByCoach[coach.name] ?? [])
+                        (assignedMembersByCoach[nameKey(coach.name)] ?? [])
                           .slice()
                           .sort((a, b) => a.fullName.localeCompare(b.fullName))
                           .map((member) => (
@@ -267,7 +281,7 @@ export default function CoachesPage() {
                     />
                     <datalist id={`coach-member-options-${coach.id}`}>
                       {members.map((member) => (
-                        <option key={`${coach.id}-${member.id}`} value={`${member.firstName} ${member.lastName}`} />
+                        <option key={`${coach.id}-${member.id}`} value={fullName(member)} />
                       ))}
                     </datalist>
                   </div>
@@ -276,18 +290,29 @@ export default function CoachesPage() {
                     disabled={assigningCoachId === coach.id}
                     onClick={async () => {
                       setError("");
-                      const selectedName = (memberInputByCoach[coach.id] ?? "").trim();
-                      const member = members.find((m) => `${m.firstName} ${m.lastName}` === selectedName) ?? null;
+                      const typedKey = nameKey(memberInputByCoach[coach.id]);
+                      if (!typedKey) {
+                        setError("Please type and select an existing member name from suggestions.");
+                        showNotice("error", "Please type and select an existing member.");
+                        return;
+                      }
+                      const matches = members.filter((m) => nameKey(fullName(m)) === typedKey);
+                      const member = matches[0] ?? null;
                       if (!member) {
                         setError("Please type and select an existing member name from suggestions.");
                         showNotice("error", "Please type and select an existing member.");
+                        return;
+                      }
+                      if (matches.length > 1) {
+                        setError("Multiple members share that name — please rename one before assigning.");
+                        showNotice("error", "Multiple members share that name — rename first.");
                         return;
                       }
                       setAssigningCoachId(coach.id);
                       const res = await fetch(`/api/users/${member.id}`, {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ coachName: coach.name }),
+                        body: JSON.stringify({ coachName: cleanName(coach.name) }),
                       });
                       const json = (await res.json()) as { success?: boolean; error?: string; details?: string };
                       if (!json.success) {
@@ -299,7 +324,7 @@ export default function CoachesPage() {
                       setAssigningCoachId(null);
                       setMemberInputByCoach((prev) => ({ ...prev, [coach.id]: "" }));
                       await load();
-                      showNotice("success", `${selectedName} assigned to ${coach.name}.`);
+                      showNotice("success", `${fullName(member)} assigned to ${cleanName(coach.name)}.`);
                     }}
                   >
                     {assigningCoachId === coach.id ? "Assigning..." : "Assign Member"}
@@ -310,16 +335,21 @@ export default function CoachesPage() {
                     disabled={unassigningCoachId === coach.id}
                     onClick={async () => {
                       setError("");
-                      const selectedName = (memberInputByCoach[coach.id] ?? "").trim();
-                      const member = members.find((m) => `${m.firstName} ${m.lastName}` === selectedName) ?? null;
+                      const typedKey = nameKey(memberInputByCoach[coach.id]);
+                      if (!typedKey) {
+                        setError("Type/select the member name first, then click Unassign.");
+                        showNotice("error", "Type/select the member name first.");
+                        return;
+                      }
+                      const member = members.find((m) => nameKey(fullName(m)) === typedKey) ?? null;
                       if (!member) {
                         setError("Type/select the member name first, then click Unassign.");
                         showNotice("error", "Type/select the member name first.");
                         return;
                       }
-                      if ((member.coachName ?? "").trim() !== coach.name) {
-                        setError(`${selectedName} is not currently assigned to ${coach.name}.`);
-                        showNotice("error", `${selectedName} is not assigned to ${coach.name}.`);
+                      if (nameKey(member.coachName) !== nameKey(coach.name)) {
+                        setError(`${fullName(member)} is not currently assigned to ${cleanName(coach.name)}.`);
+                        showNotice("error", `${fullName(member)} is not assigned to ${cleanName(coach.name)}.`);
                         return;
                       }
                       setUnassigningCoachId(coach.id);
@@ -338,7 +368,7 @@ export default function CoachesPage() {
                       setUnassigningCoachId(null);
                       setMemberInputByCoach((prev) => ({ ...prev, [coach.id]: "" }));
                       await load();
-                      showNotice("success", `${selectedName} unassigned from ${coach.name}.`);
+                      showNotice("success", `${fullName(member)} unassigned from ${cleanName(coach.name)}.`);
                     }}
                   >
                     {unassigningCoachId === coach.id ? "Unassigning..." : "Unassign Member"}
@@ -648,7 +678,7 @@ export default function CoachesPage() {
                   key={member.id}
                   className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900"
                 >
-                  {member.firstName} {member.lastName}
+                  {fullName(member)}
                 </div>
               ))}
             </div>

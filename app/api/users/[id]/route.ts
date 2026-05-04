@@ -98,8 +98,8 @@ export async function PATCH(request: Request, { params }: Params) {
       const currentlyFrozen = isFreezeActive(existing.freezeStatus, existing.freezeEndsAt, now);
       const willBeFrozen = isFreezeActive(nextFreezeStatus, nextFreezeEndsAt, now);
 
-      if (typeof body.firstName === "string") data.firstName = body.firstName;
-      if (typeof body.lastName === "string") data.lastName = body.lastName;
+      if (typeof body.firstName === "string") data.firstName = body.firstName.trim().replace(/\s+/g, " ");
+      if (typeof body.lastName === "string") data.lastName = body.lastName.trim().replace(/\s+/g, " ");
       if (typeof body.contactNo === "string") data.contactNo = body.contactNo;
       const effectiveRole = body.role ?? existing.role;
       if (body.email !== undefined) {

@@ -104,7 +104,9 @@ export async function POST(request: Request) {
       membershipNotes?: string | null;
       coachName?: string | null;
     };
-    if (!body.firstName || !body.lastName || !body.role) {
+    const firstName = (body.firstName ?? "").trim().replace(/\s+/g, " ");
+    const lastName = (body.lastName ?? "").trim().replace(/\s+/g, " ");
+    if (!firstName || !lastName || !body.role) {
       return NextResponse.json({ success: false, error: "First name, last name, and role are required" }, { status: 400 });
     }
     const normalizedEmail = body.email?.trim().toLowerCase() ?? "";
@@ -137,8 +139,8 @@ export async function POST(request: Request) {
 
         const user = await prisma.user.create({
           data: {
-            firstName: body.firstName,
-            lastName: body.lastName,
+            firstName,
+            lastName,
             contactNo: body.contactNo ?? "",
             email: normalizedEmail || null,
             address: body.address?.trim() || null,
