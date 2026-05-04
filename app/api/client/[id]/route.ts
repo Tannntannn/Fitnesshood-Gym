@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/admin-auth";
 import { getClientSessionCookieName, verifyClientSession } from "@/lib/client-session";
 import { resolveProfileImageUrl } from "@/lib/profile-image";
 
@@ -8,15 +9,18 @@ export const dynamic = "force-dynamic";
 
 type Params = { params: { id: string } };
 
-export async function GET(_: Request, { params }: Params) {
+export async function GET(request: NextRequest, { params }: Params) {
   try {
-    const cookieValue = cookies().get(getClientSessionCookieName())?.value;
-    const sessionUserId = verifyClientSession(cookieValue);
-    if (!sessionUserId) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
-    }
-    if (sessionUserId !== params.id) {
-      return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+    const adminSession = await requireAdminSession(request);
+    if (!adminSession) {
+      const cookieValue = cookies().get(getClientSessionCookieName())?.value;
+      const sessionUserId = verifyClientSession(cookieValue);
+      if (!sessionUserId) {
+        return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+      }
+      if (sessionUserId !== params.id) {
+        return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+      }
     }
 
     const user = await prisma.user.findUnique({ where: { id: params.id } });

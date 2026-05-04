@@ -36,7 +36,10 @@ export default function ClientMemberDashboard({ params }: { params: { id: string
 
   useEffect(() => {
     const load = async () => {
-      const res = await fetch(`/api/client/${params.id}`);
+      const res = await fetch(`/api/client/${params.id}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       const json = (await res.json()) as
         | { success: true; data: { user: MemberUser; attendance: AttendanceRow[] } }
         | { success: false; error: string };

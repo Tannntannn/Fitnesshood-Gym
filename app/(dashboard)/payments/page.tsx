@@ -520,6 +520,8 @@ export default function PaymentsPage() {
       },
       { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
     );
+    // roleTabs is module-scope, intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [records]);
 
   const recordGroupsByRole = useMemo(() => {
@@ -548,7 +550,8 @@ export default function PaymentsPage() {
       },
       { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
     );
-  }, [recordsByRole, roleTabs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordsByRole]);
 
   const recordGroupsByRoleFiltered = useMemo(() => {
     const qLower = paymentRecordsSearch.trim().toLowerCase();
@@ -562,7 +565,8 @@ export default function PaymentsPage() {
       },
       { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
     );
-  }, [recordGroupsByRole, paymentRecordsSearch, roleTabs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordGroupsByRole, paymentRecordsSearch]);
 
   const getChartAmount = (row: PaymentRow): number => {
     // Always use actual posted amount so split/discount totals are accurate.

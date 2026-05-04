@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -69,7 +69,7 @@ export default function CoachRemittancesPage() {
     if (json.success && json.data) setCoaches(json.data);
   };
 
-  const loadRemittances = async () => {
+  const loadRemittances = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
     params.set("limit", "800");
@@ -87,7 +87,7 @@ export default function CoachRemittancesPage() {
       setRows(json.data ?? []);
       setSummary(json.summary ?? { count: 0, totalAmount: "0" });
     }
-  };
+  }, [coachFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     void loadCoaches();
@@ -95,7 +95,7 @@ export default function CoachRemittancesPage() {
 
   useEffect(() => {
     void loadRemittances();
-  }, []);
+  }, [loadRemittances]);
 
   const totalNum = useMemo(() => Number(summary.totalAmount ?? 0), [summary.totalAmount]);
 

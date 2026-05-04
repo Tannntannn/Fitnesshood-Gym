@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { UserRole } from "@prisma/client";
-import { format } from "date-fns";
+import { differenceInCalendarDays, format } from "date-fns";
 import { X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { ScanInput } from "@/components/scan-input";
 import { nowInPH } from "@/lib/time";
+import { formatRoleLabel } from "@/lib/role-labels";
 
 type ManualCandidate = {
   id: string;
@@ -16,6 +17,119 @@ type ManualCandidate = {
   canScan?: boolean;
   blockReason?: string | null;
 };
+
+type ClientPreviewUser = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  contactNo: string;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+  role: UserRole;
+  qrCodeImage: string;
+  membershipStart: string | null;
+  membershipExpiry: string | null;
+  profileImageUrl: string | null;
+};
+type ClientPreviewAttendance = { id: string; scannedAt: string; timeIn: string; date: string };
+
+function ClientPreviewPanel({
+  user,
+  attendance,
+  previewImageFailed,
+  onProfileImageError,
+}: {
+  user: ClientPreviewUser;
+  attendance: ClientPreviewAttendance[];
+  previewImageFailed: boolean;
+  onProfileImageError: () => void;
+}) {
+  const remainingDays =
+    user.membershipExpiry != null
+      ? differenceInCalendarDays(new Date(user.membershipExpiry), new Date())
+      : null;
+  return (
+    <div className="space-y-3 p-3 text-left text-xs text-slate-700 sm:p-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex gap-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+          <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+            {user.profileImageUrl && !previewImageFailed ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={user.profileImageUrl}
+                alt=""
+                className="h-full w-full object-cover"
+                onError={onProfileImageError}
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-500">
+                {`${user.firstName[0] ?? ""}${user.lastName[0] ?? ""}`}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 space-y-0.5">
+            <p className="truncate text-sm font-semibold text-slate-900">
+              {user.firstName} {user.lastName}
+            </p>
+            <p className="text-[11px] text-slate-600">{formatRoleLabel(user.role)}</p>
+            <p className="truncate text-[11px] text-slate-500">Contact: {user.contactNo || "—"}</p>
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">QR</p>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={user.qrCodeImage} alt="Member QR" className="mx-auto mt-1 max-h-24 w-auto" />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 text-[11px]">
+        <div className="rounded border border-slate-100 bg-slate-50 px-1.5 py-1">
+          <p className="text-slate-500">Start</p>
+          <p className="font-medium text-slate-900">
+            {user.membershipStart ? format(new Date(user.membershipStart), "MMM d, yy") : "—"}
+          </p>
+        </div>
+        <div className="rounded border border-slate-100 bg-slate-50 px-1.5 py-1">
+          <p className="text-slate-500">Expiry</p>
+          <p className="font-medium text-slate-900">
+            {user.membershipExpiry ? format(new Date(user.membershipExpiry), "MMM d, yy") : "—"}
+          </p>
+        </div>
+        <div className="rounded border border-slate-100 bg-slate-50 px-1.5 py-1">
+          <p className="text-slate-500">Days left</p>
+          <p className="font-medium text-slate-900">{remainingDays !== null ? `${remainingDays}` : "—"}</p>
+        </div>
+      </div>
+      <div className="max-h-[140px] overflow-auto rounded-lg border border-slate-200">
+        <table className="w-full text-[11px]">
+          <thead className="sticky top-0 bg-slate-100 text-slate-600">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-semibold">Date</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Time in</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {attendance.length === 0 ? (
+              <tr>
+                <td colSpan={2} className="px-2 py-3 text-center text-slate-400">
+                  No attendance yet.
+                </td>
+              </tr>
+            ) : (
+              attendance.map((row) => (
+                <tr key={row.id}>
+                  <td className="px-2 py-1">{format(new Date(row.date), "MMM d, yyyy")}</td>
+                  <td className="px-2 py-1">{row.timeIn}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-slate-400">Same data as the member portal; loaded with your admin session.</p>
+    </div>
+  );
+}
 
 type AttendanceSummary = {
   totalAll: number;
@@ -38,6 +152,13 @@ export default function DashboardPage() {
   const manualSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [clock, setClock] = useState<Date | null>(null);
   const [previewUser, setPreviewUser] = useState<{ id: string; firstName: string; lastName: string } | null>(null);
+  const [previewPayload, setPreviewPayload] = useState<{
+    user: ClientPreviewUser;
+    attendance: ClientPreviewAttendance[];
+  } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewErr, setPreviewErr] = useState("");
+  const [previewImageFailed, setPreviewImageFailed] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [manualSearch, setManualSearch] = useState("");
   const [manualCandidates, setManualCandidates] = useState<ManualCandidate[]>([]);
@@ -89,6 +210,51 @@ export default function DashboardPage() {
     const id = setInterval(() => setClock(nowInPH()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!previewUser) {
+      setPreviewPayload(null);
+      setPreviewErr("");
+      setPreviewLoading(false);
+      setPreviewImageFailed(false);
+      return;
+    }
+    let cancelled = false;
+    const userId = previewUser.id;
+    setPreviewLoading(true);
+    setPreviewErr("");
+    setPreviewImageFailed(false);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/client/${encodeURIComponent(userId)}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const json = (await res.json()) as
+          | {
+              success: true;
+              data: { user: ClientPreviewUser; attendance: ClientPreviewAttendance[] };
+            }
+          | { success: false; error?: string };
+        if (cancelled) return;
+        if (!json.success) {
+          setPreviewPayload(null);
+          setPreviewErr(json.error || "Unable to load client preview.");
+          return;
+        }
+        setPreviewPayload({ user: json.data.user, attendance: json.data.attendance });
+      } catch {
+        if (cancelled) return;
+        setPreviewPayload(null);
+        setPreviewErr("Network error loading preview.");
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewUser]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -314,14 +480,26 @@ export default function DashboardPage() {
             ) : null}
           </div>
 
-          <div className="h-[360px] bg-white sm:h-[400px] md:h-[470px]">
-            {previewUser ? (
-              <iframe src={`/client/${previewUser.id}`} title="Client dashboard preview" className="h-full w-full" />
-            ) : (
-              <div className="grid h-full place-items-center px-6 text-center text-sm text-slate-500">
+          <div className="h-[360px] overflow-y-auto bg-white sm:h-[400px] md:h-[470px]">
+            {!previewUser ? (
+              <div className="grid h-full min-h-[200px] place-items-center px-6 text-center text-sm text-slate-500">
                 Waiting for scan. The preview will stay here until you close it.
               </div>
-            )}
+            ) : previewLoading ? (
+              <div className="grid h-full min-h-[200px] place-items-center px-6 text-sm text-slate-500">Loading preview…</div>
+            ) : previewErr ? (
+              <div className="grid h-full min-h-[200px] place-items-center px-6 text-center">
+                <p className="text-sm font-semibold text-red-700">Unable to load dashboard</p>
+                <p className="mt-1 text-xs text-slate-600">{previewErr}</p>
+              </div>
+            ) : previewPayload ? (
+              <ClientPreviewPanel
+                user={previewPayload.user}
+                attendance={previewPayload.attendance}
+                previewImageFailed={previewImageFailed}
+                onProfileImageError={() => setPreviewImageFailed(true)}
+              />
+            ) : null}
           </div>
         </Card>
       </div>

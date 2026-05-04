@@ -212,8 +212,26 @@ export async function PATCH(request: Request, { params }: Params) {
 
     return NextResponse.json({ success: true, data: updated });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    const userInputPatterns = [
+      "Payment not found",
+      "Split payments cannot be edited",
+      "Gross amount must be",
+      "Invalid discount type",
+      "Discount percent must be",
+      "Invalid fixed discount",
+      "Final amount must be",
+      "Amount must be",
+      "Invalid payment method",
+      "Use new payment entry",
+      "Invalid payment timestamp",
+    ];
+    if (userInputPatterns.some((p) => message.includes(p))) {
+      const status = message.includes("Payment not found") ? 404 : 400;
+      return NextResponse.json({ success: false, error: message }, { status });
+    }
     return NextResponse.json(
-      { success: false, error: "Failed to update transaction.", details: error instanceof Error ? error.message : "Unknown error" },
+      { success: false, error: "Failed to update transaction.", details: message },
       { status: 500 },
     );
   }
@@ -248,8 +266,12 @@ export async function DELETE(_: Request, { params }: Params) {
 
     return NextResponse.json({ success: true, data: { id: deleted.id } });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message.includes("Payment not found")) {
+      return NextResponse.json({ success: false, error: message }, { status: 404 });
+    }
     return NextResponse.json(
-      { success: false, error: "Failed to delete transaction.", details: error instanceof Error ? error.message : "Unknown error" },
+      { success: false, error: "Failed to delete transaction.", details: message },
       { status: 500 },
     );
   }

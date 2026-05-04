@@ -366,7 +366,15 @@ export async function POST(request: Request) {
     if (message.startsWith("FREEZE_BLOCK:")) {
       return NextResponse.json({ success: false, error: message.replace("FREEZE_BLOCK:", "") }, { status: 409 });
     }
-    if (message.includes("Invalid add-on next due")) {
+    const userInputPatterns = [
+      "Invalid add-on next due",
+      "User not found",
+      "Service not found",
+      "Add-on subscription",
+      "Custom add-on payments",
+      "Use either a linked add-on",
+    ];
+    if (userInputPatterns.some((p) => message.includes(p))) {
       return NextResponse.json({ success: false, error: message }, { status: 400 });
     }
     return NextResponse.json(
