@@ -292,9 +292,8 @@ export async function POST(request: Request) {
               )
             : 1;
 
-        let monthsCharged: number;
         const isBronzeTier = tierLower === BRONZE_TIER;
-        monthsCharged = isBronzeTier
+        const monthsCharged = isBronzeTier
           ? Math.max(1, Math.min(36, monthsFromGross))
           : Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, requestedPaymentMonths || monthsFromGross));
         membershipExpectedDue = Math.max(0, monthsCharged * Math.max(0, monthlyRateNum));

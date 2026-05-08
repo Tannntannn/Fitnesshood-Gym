@@ -160,12 +160,6 @@ function newCartLineId(): string {
   return `line-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function isConfigurableLockInTier(service: ServiceRow | null | undefined): boolean {
-  if (!service || service.name !== "Membership") return false;
-  const tier = service.tier.trim().toLowerCase();
-  return tier === "silver" || tier === "gold" || tier === "platinum";
-}
-
 /** Membership tiers where admin can set “pay now” months (Bronze uses gross / tile only). */
 function isMembershipNonBronze(service: ServiceRow | null | undefined): boolean {
   if (!service || service.name !== "Membership") return false;
@@ -176,16 +170,6 @@ function clampPayNowMonths(raw: unknown): number {
   const n = Math.trunc(Number(raw));
   if (!Number.isFinite(n)) return 1;
   return Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, n));
-}
-
-function lockInProgressFromRemaining(
-  remaining: number | null | undefined,
-  template: number | null | undefined,
-): string | null {
-  if (!Number.isFinite(Number(remaining)) || !Number.isFinite(Number(template))) return null;
-  const t = Math.max(0, Math.trunc(Number(template)));
-  const l = Math.max(0, Math.min(t, Math.trunc(Number(remaining))));
-  return `${Math.max(0, t - l)} / ${t} mo`;
 }
 
 /** Allocate whole-cent fixed discount across lines by gross share (last lines absorb remainder). */
@@ -387,7 +371,6 @@ function HistorySortHeader({
       <button
         type="button"
         onClick={() => onToggle(column)}
-        aria-sort={ariaSort}
         className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${className} ${
           active ? "border-[#1e3a5f] bg-[#1e3a5f]/10 text-[#1e3a5f]" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
         }`}
@@ -1121,12 +1104,15 @@ export default function PaymentsPage() {
   }, [trendData.length]);
 
   /** Per-tile quantity helpers — minimum 1, used as a multiplier for the gross when adding to cart. */
-  const shouldAutoFillFromBalance = (service: ServiceRow): boolean => {
-    if (collectionStatus !== "FULLY_PAID") return false;
-    if (service.name !== "Membership") return false;
-    if (!selectedMember || selectedMemberBalance <= 0) return false;
-    return (selectedMember.membershipTier ?? "").trim().toLowerCase() === service.tier.trim().toLowerCase();
-  };
+  const shouldAutoFillFromBalance = useCallback(
+    (service: ServiceRow): boolean => {
+      if (collectionStatus !== "FULLY_PAID") return false;
+      if (service.name !== "Membership") return false;
+      if (!selectedMember || selectedMemberBalance <= 0) return false;
+      return (selectedMember.membershipTier ?? "").trim().toLowerCase() === service.tier.trim().toLowerCase();
+    },
+    [collectionStatus, selectedMember, selectedMemberBalance],
+  );
   const unitPriceForService = (service: ServiceRow): number => {
     if (shouldAutoFillFromBalance(service)) {
       return selectedMemberBalance;
@@ -1210,7 +1196,7 @@ export default function PaymentsPage() {
         return next;
       }),
     );
-  }, [collectionStatus, selectedMember?.id, selectedMember?.membershipTier, selectedMemberBalance, services]);
+  }, [collectionStatus, selectedMember, selectedMemberBalance, services, shouldAutoFillFromBalance]);
 
   const appendCustomAddOnToCart = () => {
     if (!customAddOnService) {
