@@ -8,6 +8,12 @@ export const dynamic = "force-dynamic";
 
 const MAX_IDS = 25;
 
+type ReceiptSize = "thermal" | "a4";
+
+function parseReceiptSize(value: string | null): ReceiptSize {
+  return (value ?? "").trim().toLowerCase() === "a4" ? "a4" : "thermal";
+}
+
 function itemLabelForRow(
   row: {
     service: { name: string; tier: string };
@@ -41,7 +47,23 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
   }
   try {
-    const raw = new URL(request.url).searchParams.get("ids") ?? "";
+    const url = new URL(request.url);
+    const raw = url.searchParams.get("ids") ?? "";
+    const size = parseReceiptSize(url.searchParams.get("size"));
+    const isA4 = size === "a4";
+    const pageRule = isA4 ? "@page { size: A4; margin: 14mm; }" : "@page { size: 80mm auto; margin: 0 10mm 0 0; }";
+    const bodyRule = isA4
+      ? "body { font-family: Arial, sans-serif; margin: 0 auto; padding: 0; max-width: 180mm; color: #0f172a; background: #fff; }"
+      : "body { font-family: Arial, sans-serif; margin: 12px auto; padding: 0 10mm 0 0; max-width: 80mm; color: #0f172a; background: #fff; }";
+    const topActionsRule = isA4
+      ? ".top-actions { max-width: 180mm; margin: 0 auto 8px; padding: 0; display: flex; justify-content: flex-end; gap: 8px; }"
+      : ".top-actions { max-width: 80mm; margin: 0 auto 8px; padding: 0 10mm 0 0; display: flex; justify-content: flex-end; gap: 8px; }";
+    const receiptRule = isA4
+      ? ".receipt { max-width: 180mm; width: 100%; margin: 0 auto; border: 1px solid #cbd5e1; padding: 16px 20px 20px 20px; }"
+      : ".receipt { max-width: 80mm; width: 100%; margin: 0 auto; border: 1px solid #cbd5e1; padding: 8px 0 10px 0; }";
+    const signatureLineRule = isA4
+      ? ".signature-line { width: 100%; max-width: 90mm; margin: 0 auto 6px; border-top: 1px solid #64748b; height: 1px; }"
+      : ".signature-line { width: 100%; max-width: 55mm; margin: 0 auto 6px; border-top: 1px solid #64748b; height: 1px; }";
     const requested = Array.from(
       new Set(
         raw
@@ -68,6 +90,7 @@ export async function GET(request: Request) {
         collectionStatus: true,
         paidAt: true,
         paymentReference: true,
+        orNumber: true,
         notes: true,
         approvedBy: true,
         recordedBy: true,
@@ -147,6 +170,8 @@ export async function GET(request: Request) {
         : methods.join(" + ");
     const refs = ordered.map((p) => p.paymentReference?.trim()).filter(Boolean);
     const refLine = refs.length ? esc(refs.join(" · ")) : "-";
+    const orNumbers = ordered.map((p) => p.orNumber?.trim()).filter(Boolean);
+    const orLine = orNumbers.length ? esc(orNumbers.join(" · ")) : "-";
 
     const loyaltyPointsSum = ordered.reduce((s, p) => s + (p.loyaltyLedger[0]?.points ?? 0), 0);
     const balanceAfter = last.loyaltyLedger[0]?.remainingBalance ?? last.user.loyaltyStars ?? 0;
@@ -162,14 +187,14 @@ export async function GET(request: Request) {
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${esc(invoiceNo)}</title>
+  <title>${esc(invoiceNo)}${isA4 ? " (A4)" : ""}</title>
   <style>
-    @page { size: 80mm auto; margin: 0 10mm 0 0; }
+    ${pageRule}
     * { box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; margin: 12px auto; padding: 0 10mm 0 0; max-width: 80mm; color: #0f172a; background: #fff; }
-    .top-actions { max-width: 80mm; margin: 0 auto 8px; padding: 0 10mm 0 0; display: flex; justify-content: flex-end; gap: 8px; }
+    ${bodyRule}
+    ${topActionsRule}
     button { border: 1px solid #94a3b8; background: #fff; border-radius: 8px; padding: 6px 10px; cursor: pointer; }
-    .receipt { max-width: 80mm; width: 100%; margin: 0 auto; border: 1px solid #cbd5e1; padding: 8px 0 10px 0; }
+    ${receiptRule}
     .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; border-bottom: 1px solid #cbd5e1; padding-bottom: 8px; flex-wrap: wrap; }
     .gym-name { margin: 0; font-size: 15px; letter-spacing: .2px; line-height: 1.2; }
     .muted { color: #475569; font-size: 10px; margin: 0; line-height: 1.35; }
@@ -187,7 +212,7 @@ export async function GET(request: Request) {
     .foot-note { margin-top: 12px; font-size: 11px; color: #334155; }
     .foot-hours { margin-top: 10px; font-size: 10px; color: #334155; line-height: 1.45; white-space: pre-line; }
     .signature { margin-top: 18px; text-align: center; font-size: 10px; color: #334155; }
-    .signature-line { width: 100%; max-width: 55mm; margin: 0 auto 6px; border-top: 1px solid #64748b; height: 1px; }
+    ${signatureLineRule}
     .extra { margin-top: 8px; font-size: 10px; color: #334155; line-height: 1.4; }
     .extra > div { margin-bottom: 3px; }
     @media print {
@@ -266,6 +291,7 @@ export async function GET(request: Request) {
     <div class="extra">
       <div><strong>Lines included:</strong> ${ordered.length}</div>
       <div><strong>Reference(s):</strong> ${refLine}</div>
+      <div><strong>OR number(s):</strong> ${orLine}</div>
       <div><strong>Loyalty points (sum on these lines):</strong> ${loyaltyPointsSum >= 0 ? "+" : ""}${loyaltyPointsSum} (Balance after last line: ${balanceAfter})</div>
       <div><strong>Notes:</strong> ${notesCombined ? esc(notesCombined) : "-"}</div>
       <div><strong>Recorded by (last line):</strong> ${esc(last.recordedBy ?? "-")}</div>

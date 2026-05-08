@@ -39,8 +39,12 @@ export function computeDaysLeft(expiry: Date | null): number | null {
   return differenceInCalendarDays(expiry, nowInPH());
 }
 
-export function extendMonthlyExpiry(existing: Date | null): Date {
+export function extendMonthlyExpiry(existing: Date | null, cycleDays = 30): Date {
   const now = nowInPH();
   const base = existing && isAfter(existing, now) ? existing : now;
-  return addDays(base, 30);
+  const days = Number.isFinite(cycleDays) && cycleDays > 0 ? Math.trunc(cycleDays) : 30;
+  return addDays(base, days);
 }
+
+/** Upper bound for admin “pay now” months (POS + confirm); keeps loops bounded while allowing large prepays. */
+export const MAX_MEMBERSHIP_PAY_NOW_MONTHS = 600;

@@ -34,6 +34,7 @@ export async function POST(request: Request) {
       tier?: string;
       monthlyRate?: number;
       contractMonths?: number;
+      accessCycleDays?: number;
       membershipFee?: number;
       contractPrice?: number;
       isActive?: boolean;
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
     const tier = body.tier?.trim();
     const monthlyRate = Number(body.monthlyRate ?? 0);
     const contractMonths = Math.max(0, Math.trunc(Number(body.contractMonths ?? 0)));
+    const accessCycleDays = Math.max(1, Math.trunc(Number(body.accessCycleDays ?? 30)));
     const membershipFee = Number(body.membershipFee ?? 0);
     const contractPrice = Number(body.contractPrice ?? monthlyRate);
 
@@ -62,6 +64,7 @@ export async function POST(request: Request) {
         tier,
         monthlyRate,
         contractMonths,
+        accessCycleDays,
         membershipFee,
         contractPrice,
         isActive: body.isActive ?? true,

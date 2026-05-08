@@ -19,14 +19,42 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
   const member = await tx.user.findUnique({ where: { id: userId } });
   if (!member || member.role !== "MEMBER") return;
 
-  const latestMembershipPayment = await tx.payment.findFirst({
+  const latestContractPayment = await tx.payment.findFirst({
     where: {
       userId,
-      OR: [{ transactionType: "MEMBERSHIP_CONTRACT" }, { transactionType: "LEGACY", service: { name: "Membership" } }],
+      OR: [
+        {
+          transactionType: "MEMBERSHIP_CONTRACT",
+          service: { name: "Membership", tier: { not: "Bronze" } },
+        },
+        {
+          transactionType: "LEGACY",
+          service: { name: "Membership", tier: { not: "Bronze" } },
+        },
+      ],
     },
     include: { service: true },
     orderBy: { paidAt: "desc" },
   });
+
+  const hasMonthlyMembershipPayment = await tx.payment.findFirst({
+    where: { userId, transactionType: "MONTHLY_FEE", service: { name: "Membership" } },
+    select: { id: true },
+  });
+
+  if (!latestContractPayment) {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        monthsPaid: 0,
+        remainingMonths: 0,
+        totalContractPrice: toMoney(0),
+        remainingBalance: toMoney(0),
+        ...(hasMonthlyMembershipPayment ? {} : { membershipTier: null }),
+      },
+    });
+    return;
+  }
 
   const totalsRows = await tx.$queryRaw<Array<{ totalPaid: unknown; totalDiscount: unknown }>>`
     SELECT
@@ -35,9 +63,11 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
     FROM "Payment" p
     WHERE p."userId" = ${userId}
       AND (
-        p."transactionType" = 'MEMBERSHIP_CONTRACT'
+        (p."transactionType" = 'MEMBERSHIP_CONTRACT' AND EXISTS (
+          SELECT 1 FROM "Service" s WHERE s."id" = p."serviceId" AND s."name" = 'Membership' AND s."tier" <> 'Bronze'
+        ))
         OR (p."transactionType" = 'LEGACY' AND EXISTS (
-          SELECT 1 FROM "Service" s WHERE s."id" = p."serviceId" AND s."name" = 'Membership'
+          SELECT 1 FROM "Service" s WHERE s."id" = p."serviceId" AND s."name" = 'Membership' AND s."tier" <> 'Bronze'
         ))
       )
   `;
@@ -46,22 +76,8 @@ async function recomputeMemberMembership(tx: Prisma.TransactionClient, userId: s
   const totalDiscount = toMoney(String(totals.totalDiscount ?? 0));
   const totalCovered = toMoney(Number(totalPaid) + Number(totalDiscount));
 
-  if (!latestMembershipPayment) {
-    await tx.user.update({
-      where: { id: userId },
-      data: {
-        monthsPaid: 0,
-        remainingMonths: 0,
-        totalContractPrice: toMoney(0),
-        remainingBalance: toMoney(0),
-        membershipTier: null,
-      },
-    });
-    return;
-  }
-
-  const service = latestMembershipPayment.service;
-  const contractStart = member.membershipStart ?? latestMembershipPayment.paidAt ?? nowInPH();
+  const service = latestContractPayment.service;
+  const contractStart = member.membershipStart ?? latestContractPayment.paidAt ?? nowInPH();
   const fullMembershipExpiry = addDays(contractStart, service.contractMonths * 30);
   const daysLeft = computeDaysLeft(fullMembershipExpiry);
   const membershipStatus = resolveMembershipStatus(daysLeft);
@@ -111,6 +127,7 @@ export async function PATCH(request: Request, { params }: Params) {
       collectionStatus?: "FULLY_PAID" | "PARTIAL";
       paidAt?: string;
       paymentReference?: string | null;
+      orNumber?: string | null;
       notes?: string | null;
       voidTransaction?: boolean;
       voidReason?: string;
@@ -188,6 +205,7 @@ export async function PATCH(request: Request, { params }: Params) {
           data.paidAt = paidAt;
         }
         if (body.paymentReference !== undefined) data.paymentReference = sanitizePaymentReference(body.paymentReference);
+        if (body.orNumber !== undefined) data.orNumber = sanitizePaymentReference(body.orNumber);
         if (body.notes !== undefined) data.notes = body.notes?.trim() || null;
       }
 
@@ -199,7 +217,8 @@ export async function PATCH(request: Request, { params }: Params) {
       if (
         existing.user.role === "MEMBER" &&
         (existing.transactionType === "MEMBERSHIP_CONTRACT" ||
-          (existing.transactionType === "LEGACY" && existing.service.name === "Membership"))
+          (existing.transactionType === "LEGACY" && existing.service.name === "Membership")) &&
+        existing.service.tier !== "Bronze"
       ) {
         await recomputeMemberMembership(tx, existing.userId);
       }
@@ -254,7 +273,8 @@ export async function DELETE(_: Request, { params }: Params) {
       if (
         existing.user.role === "MEMBER" &&
         (existing.transactionType === "MEMBERSHIP_CONTRACT" ||
-          (existing.transactionType === "LEGACY" && existing.service.name === "Membership"))
+          (existing.transactionType === "LEGACY" && existing.service.name === "Membership")) &&
+        existing.service.tier !== "Bronze"
       ) {
         await recomputeMemberMembership(tx, existing.userId);
       }

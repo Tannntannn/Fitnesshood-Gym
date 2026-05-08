@@ -16,6 +16,7 @@ export async function PATCH(request: Request, { params }: Params) {
       tier?: string;
       monthlyRate?: number;
       contractMonths?: number;
+      accessCycleDays?: number;
       membershipFee?: number;
       contractPrice?: number;
       isActive?: boolean;
@@ -26,6 +27,7 @@ export async function PATCH(request: Request, { params }: Params) {
       tier?: string;
       monthlyRate?: number;
       contractMonths?: number;
+      accessCycleDays?: number;
       membershipFee?: number;
       contractPrice?: number;
       isActive?: boolean;
@@ -35,6 +37,9 @@ export async function PATCH(request: Request, { params }: Params) {
     if (typeof body.tier === "string") updateData.tier = body.tier.trim();
     if (body.monthlyRate !== undefined) updateData.monthlyRate = Number(body.monthlyRate);
     if (body.contractMonths !== undefined) updateData.contractMonths = Math.max(0, Math.trunc(Number(body.contractMonths)));
+    if (body.accessCycleDays !== undefined) {
+      updateData.accessCycleDays = Math.max(1, Math.trunc(Number(body.accessCycleDays)));
+    }
     if (body.membershipFee !== undefined) updateData.membershipFee = Number(body.membershipFee);
     if (body.contractPrice !== undefined) updateData.contractPrice = Number(body.contractPrice);
     if (body.isActive !== undefined) updateData.isActive = Boolean(body.isActive);

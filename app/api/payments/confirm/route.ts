@@ -6,6 +6,7 @@ import {
   computeDaysLeft,
   extendMonthlyExpiry,
   formatPesoLabel,
+  MAX_MEMBERSHIP_PAY_NOW_MONTHS,
   resolveMembershipStatus,
   sanitizePaymentReference,
   toMoney,
@@ -21,6 +22,7 @@ import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 type SplitInput = { method: string; amount: number; reference?: string | null };
 type PaymentDiscountTypeValue = "NONE" | "PERCENT" | "FIXED";
 type PaymentTransactionTypeValue = "LEGACY" | "MEMBERSHIP_CONTRACT" | "MONTHLY_FEE" | "WALK_IN" | "ADD_ON" | "OTHER";
+const BRONZE_TIER = "bronze";
 
 function parseOptionalAddOnDueDate(value: unknown): Date | null {
   if (value === undefined || value === null) return null;
@@ -51,6 +53,7 @@ export async function POST(request: Request) {
       collectionStatus?: "FULLY_PAID" | "PARTIAL";
       notes?: string;
       paymentReference?: string | null;
+      orNumber?: string | null;
       splits?: SplitInput[];
       addOnSubscriptionId?: string | null;
       /** One-time add-on (locker, Wi‑Fi, etc.): label; must use Add-on / Custom service. Posts as ADD_ON. Mutually exclusive with addOnSubscriptionId. */
@@ -59,10 +62,16 @@ export async function POST(request: Request) {
       receiptGroupId?: string | null;
       /** For custom POS add-on: optional next due / expiration (ISO or YYYY-MM-DD). Updates Add-on dashboard row. */
       addOnNextDueDate?: string | null;
+      /** Months paying toward access now (all Membership tiers except Bronze). */
+      paymentMonths?: number;
     };
 
     if (!body.memberId || !body.serviceId || !body.paymentMethod) {
       return NextResponse.json({ success: false, error: "memberId, serviceId, and paymentMethod are required." }, { status: 400 });
+    }
+    const requestedCollectionStatus = body.collectionStatus ?? "FULLY_PAID";
+    if (!["FULLY_PAID", "PARTIAL"].includes(requestedCollectionStatus)) {
+      return NextResponse.json({ success: false, error: "Invalid collection status." }, { status: 400 });
     }
     const grossAmountNumber = Number(body.grossAmount ?? body.amount ?? 0);
     if (!Number.isFinite(grossAmountNumber) || grossAmountNumber <= 0) {
@@ -135,23 +144,31 @@ export async function POST(request: Request) {
       if (addOnId && member.role === "MEMBER" && !linkedAddOn && !customLabel) {
         throw new Error("Add-on subscription not found for this member.");
       }
+      const isMembershipProduct = service.name.trim() === "Membership" && !linkedAddOn && !customLabel;
+      const isBronzeTier = service.tier.trim().toLowerCase() === BRONZE_TIER;
+      const isMembershipService = member.role === "MEMBER" && isMembershipProduct;
+      const isBronzeNonMemberMembershipPayment = member.role === "NON_MEMBER" && isMembershipProduct && isBronzeTier;
+      const isMonthlyMembershipPayment = isMembershipService || isBronzeNonMemberMembershipPayment;
+
       const requestedType = body.transactionType;
       let transactionType: PaymentTransactionTypeValue =
-        requestedType ??
-        (member.role === "MEMBER" && service.name === "Membership" ? "MEMBERSHIP_CONTRACT" : "OTHER");
+        requestedType ?? (isMembershipProduct ? "MONTHLY_FEE" : "OTHER");
       if (linkedAddOn) {
         transactionType = "ADD_ON";
       }
       if (customLabel) {
         transactionType = "ADD_ON";
       }
-      const isMembershipContractPayment = member.role === "MEMBER" && transactionType === "MEMBERSHIP_CONTRACT";
+      if (isMembershipProduct && transactionType === "MEMBERSHIP_CONTRACT") {
+        transactionType = "MONTHLY_FEE";
+      }
+      const isMembershipMonthlyPayment = transactionType === "MONTHLY_FEE" && isMonthlyMembershipPayment;
       const isMonthlyFeePayment = member.role === "MEMBER" && transactionType === "MONTHLY_FEE";
       const freezeStatus = (member.freezeStatus ?? "").trim().toUpperCase();
       const freezeEndsAt = (member as { freezeEndsAt?: Date | null }).freezeEndsAt ?? null;
       if (
         member.role === "MEMBER" &&
-        (isMembershipContractPayment || isMonthlyFeePayment || transactionType === "ADD_ON") &&
+        (isMonthlyFeePayment || transactionType === "ADD_ON") &&
         freezeStatus === "ACTIVE" &&
         (!freezeEndsAt || freezeEndsAt.getTime() >= nowInPH().getTime())
       ) {
@@ -159,9 +176,10 @@ export async function POST(request: Request) {
           "FREEZE_BLOCK:Cannot process membership renewals, monthly fees, or add-on payments while account freeze is active.",
         );
       }
-      const collectionStatus = isMembershipContractPayment ? (body.collectionStatus ?? "FULLY_PAID") : "FULLY_PAID";
+      const collectionStatus = requestedCollectionStatus;
 
       const paymentReference = isSplit ? null : sanitizePaymentReference(body.paymentReference);
+      const orNumber = isSplit ? null : sanitizePaymentReference(body.orNumber);
 
       const payment = await tx.payment.create({
         data: {
@@ -174,6 +192,7 @@ export async function POST(request: Request) {
           isSplit,
           notes: body.notes?.trim() || null,
           paymentReference,
+          orNumber,
           addOnSubscriptionId: linkedAddOn ? linkedAddOn.id : null,
         },
       });
@@ -247,8 +266,131 @@ export async function POST(request: Request) {
       }
 
       let updatedMember = member;
+      let membershipExpectedDue = 0;
+      let lockInPaidMonthsForSummary: number | null = null;
+      const sameTierAsMember =
+        (member.membershipTier ?? "").trim().toLowerCase() === service.tier.trim().toLowerCase();
+      const existingMemberBalance = Math.max(0, Number(member.remainingBalance ?? 0));
+      const settleExistingBalanceOnly =
+        isMembershipMonthlyPayment &&
+        collectionStatus === "FULLY_PAID" &&
+        sameTierAsMember &&
+        existingMemberBalance > 0;
 
-      if (member.role === "MEMBER" && isMonthlyFeePayment && !isMembershipContractPayment) {
+      if (isMembershipMonthlyPayment) {
+        const monthlyRateNum = Number(service.monthlyRate);
+        const tierLower = service.tier.trim().toLowerCase();
+        const requestedPaymentMonths = Math.max(0, Math.trunc(Number(body.paymentMonths ?? 0)));
+        const monthsFromGross =
+          monthlyRateNum > 0 && Number.isFinite(monthlyRateNum)
+            ? Math.max(
+                1,
+                Math.min(
+                  MAX_MEMBERSHIP_PAY_NOW_MONTHS,
+                  Math.round(grossAmountNumber / monthlyRateNum) || 1,
+                ),
+              )
+            : 1;
+
+        let monthsCharged: number;
+        const isBronzeTier = tierLower === BRONZE_TIER;
+        monthsCharged = isBronzeTier
+          ? Math.max(1, Math.min(36, monthsFromGross))
+          : Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, requestedPaymentMonths || monthsFromGross));
+        membershipExpectedDue = Math.max(0, monthsCharged * Math.max(0, monthlyRateNum));
+        const skipMonthlyExtensionForUnsettledSameTier =
+          member.role === "MEMBER" && sameTierAsMember && existingMemberBalance > 0;
+        const lockInTemplate = Math.max(0, Math.trunc(Number(service.contractMonths) || 0));
+        const fullPaidSameTierRows =
+          lockInTemplate > 0 && member.role === "MEMBER"
+            ? await tx.payment.findMany({
+                where: {
+                  userId: member.id,
+                  transactionType: "MONTHLY_FEE",
+                  collectionStatus: "FULLY_PAID",
+                  service: {
+                    name: "Membership",
+                    tier: service.tier,
+                  },
+                },
+                select: {
+                  grossAmount: true,
+                  amount: true,
+                  service: { select: { monthlyRate: true } },
+                },
+              })
+            : [];
+        const fullPaidSameTierMonths = fullPaidSameTierRows.reduce((sum, row) => {
+          const monthlyRate = Number(row.service.monthlyRate);
+          const gross = Number(row.grossAmount ?? row.amount ?? 0);
+          const paidMonths =
+            monthlyRate > 0 && Number.isFinite(monthlyRate)
+              ? Math.max(1, Math.trunc(Math.round(gross / monthlyRate) || 1))
+              : 1;
+          return sum + paidMonths;
+        }, 0);
+        const lockInPaidMonths = lockInTemplate > 0 ? Math.min(lockInTemplate, fullPaidSameTierMonths) : 0;
+        const lockInRemaining = Math.max(lockInTemplate - lockInPaidMonths, 0);
+        lockInPaidMonthsForSummary = lockInTemplate > 0 ? lockInPaidMonths : null;
+        const now = nowInPH();
+        const fullExpiryAnchor = member.fullMembershipExpiry && member.fullMembershipExpiry.getTime() >= now.getTime() ? member.fullMembershipExpiry : now;
+        const fullMembershipExpiryAfterLockIn =
+          lockInRemaining > 0 ? addMonths(fullExpiryAnchor, lockInRemaining) : member.fullMembershipExpiry;
+        const lockInLabel = lockInRemaining > 0 ? `${lockInRemaining} Months Lock-In Left` : "No Lock-in";
+
+        if (settleExistingBalanceOnly) {
+          const newBalance = Math.max(0, existingMemberBalance - Number(amountNumber));
+          const membershipExpiry =
+            fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? member.monthlyExpiryDate ?? nowInPH();
+          const daysLeft = computeDaysLeft(membershipExpiry);
+          const membershipStatus = resolveMembershipStatus(daysLeft);
+          updatedMember = await tx.user.update({
+            where: { id: member.id },
+            data: {
+              remainingBalance: toMoney(newBalance),
+              fullMembershipExpiry: fullMembershipExpiryAfterLockIn,
+              membershipExpiry,
+              daysLeft,
+              membershipStatus,
+              lockInLabel,
+              remainingMonths: lockInRemaining,
+              monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
+              membershipFeeLabel: formatPesoLabel(service.membershipFee),
+              gracePeriodEnd: addDays(membershipExpiry, 7),
+            },
+          });
+        } else {
+          let monthlyExpiryDate: Date | null = member.monthlyExpiryDate;
+          if (!skipMonthlyExtensionForUnsettledSameTier) {
+            let monthlyExpiryCursor: Date | null = member.monthlyExpiryDate;
+            for (let i = 0; i < monthsCharged; i++) {
+              monthlyExpiryCursor = extendMonthlyExpiry(monthlyExpiryCursor, Number(service.accessCycleDays) || 30);
+            }
+            monthlyExpiryDate = monthlyExpiryCursor as Date;
+          }
+          const membershipExpiry =
+            fullMembershipExpiryAfterLockIn ?? monthlyExpiryDate ?? member.monthlyExpiryDate ?? nowInPH();
+          const daysLeft = computeDaysLeft(membershipExpiry);
+          const membershipStatus = resolveMembershipStatus(daysLeft);
+          updatedMember = await tx.user.update({
+            where: { id: member.id },
+            data: {
+              monthlyExpiryDate,
+              membershipExpiry,
+              fullMembershipExpiry: fullMembershipExpiryAfterLockIn,
+              daysLeft,
+              membershipStatus,
+              membershipTier: service.tier,
+              lockInLabel,
+              remainingMonths: lockInRemaining,
+              monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
+              membershipFeeLabel: formatPesoLabel(service.membershipFee),
+              gracePeriodEnd: addDays(membershipExpiry, 7),
+              ...(member.membershipStart ? {} : { membershipStart: nowInPH() }),
+            },
+          });
+        }
+      } else if (member.role === "MEMBER" && isMonthlyFeePayment && !isMembershipService) {
         const monthlyExpiryDate = extendMonthlyExpiry(member.monthlyExpiryDate);
         updatedMember = await tx.user.update({
           where: { id: member.id },
@@ -256,54 +398,6 @@ export async function POST(request: Request) {
             monthlyExpiryDate,
             monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
             membershipFeeLabel: formatPesoLabel(service.membershipFee),
-          },
-        });
-      } else if (member.role === "MEMBER" && isMembershipContractPayment) {
-        const totalsRows = await tx.$queryRaw<Array<{ totalPaid: unknown; totalDiscount: unknown }>>`
-          SELECT
-            COALESCE(SUM(p."amount"), 0) AS "totalPaid",
-            COALESCE(SUM(COALESCE(p."discountAmount", 0)), 0) AS "totalDiscount"
-          FROM "Payment" p
-          WHERE p."userId" = ${member.id}
-            AND p."transactionType" = 'MEMBERSHIP_CONTRACT'
-        `;
-        const totals = totalsRows[0] ?? { totalPaid: 0, totalDiscount: 0 };
-        const totalPaid = toMoney(String(totals.totalPaid ?? 0));
-        const totalDiscount = toMoney(String(totals.totalDiscount ?? 0));
-        // Discount reduces the payable contract amount, so coverage is paid + discount.
-        const totalCovered = toMoney(Number(totalPaid) + Number(totalDiscount));
-
-        const monthlyExpiryDate = extendMonthlyExpiry(member.monthlyExpiryDate);
-        const contractStart = member.membershipStart ?? nowInPH();
-        const fullMembershipExpiry = addDays(contractStart, service.contractMonths * 30);
-        const daysLeft = computeDaysLeft(fullMembershipExpiry);
-        const membershipStatus = resolveMembershipStatus(daysLeft);
-
-        const monthlyRate = Number(service.monthlyRate);
-        const contractMonths = service.contractMonths;
-        const monthsPaid = monthlyRate > 0 ? Math.floor(Number(totalCovered) / monthlyRate) : 0;
-        const remainingMonths = Math.max(contractMonths - monthsPaid, 0);
-        const totalContractPrice = service.contractPrice;
-        const remainingBalance = toMoney(Math.max(Number(totalContractPrice) - Number(totalCovered), 0));
-
-        updatedMember = await tx.user.update({
-          where: { id: member.id },
-          data: {
-            membershipStart: contractStart,
-            membershipExpiry: fullMembershipExpiry,
-            monthlyExpiryDate,
-            fullMembershipExpiry,
-            daysLeft,
-            membershipStatus,
-            monthsPaid,
-            remainingMonths,
-            totalContractPrice,
-            remainingBalance,
-            membershipTier: service.tier,
-            lockInLabel: service.contractMonths > 1 ? `${service.contractMonths} Months Lock-In` : "No Lock-in",
-            monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
-            membershipFeeLabel: formatPesoLabel(service.membershipFee),
-            gracePeriodEnd: addDays(fullMembershipExpiry, 7),
           },
         });
       } else if (member.role === "MEMBER" && transactionType === "ADD_ON") {
@@ -319,6 +413,18 @@ export async function POST(request: Request) {
               dueDate: nextDue,
               status: "ACTIVE",
             },
+          });
+        }
+      }
+
+      if (member.role === "MEMBER" && isMembershipMonthlyPayment) {
+        const outstanding =
+          collectionStatus === "PARTIAL" ? Math.max(0, Number(membershipExpectedDue) - Number(amountNumber)) : 0;
+        if (outstanding > 0) {
+          const prevBalance = Number(updatedMember.remainingBalance ?? 0);
+          updatedMember = await tx.user.update({
+            where: { id: member.id },
+            data: { remainingBalance: toMoney(Math.max(0, prevBalance + outstanding)) },
           });
         }
       }
@@ -357,7 +463,10 @@ export async function POST(request: Request) {
         await syncMembershipPenaltyInTx(tx, member.id);
       }
 
-      return { payment, updatedMember };
+      return {
+        payment,
+        updatedMember: { ...updatedMember, lockInPaidMonths: lockInPaidMonthsForSummary },
+      };
     });
 
     return NextResponse.json({ success: true, data: result });

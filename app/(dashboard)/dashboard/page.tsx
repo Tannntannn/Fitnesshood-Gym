@@ -33,6 +33,14 @@ type ClientPreviewUser = {
   profileImageUrl: string | null;
 };
 type ClientPreviewAttendance = { id: string; scannedAt: string; timeIn: string; date: string };
+type WalkInRegistrationSummary = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: UserRole;
+  createdAt: string;
+};
 
 function ClientPreviewPanel({
   user,
@@ -141,7 +149,6 @@ type AttendanceSummary = {
     id: string;
     scannedAt: string;
     timeIn: string;
-    timeOut?: string | null;
     roleSnapshot: UserRole;
     user: { firstName: string; lastName: string };
   }>;
@@ -166,6 +173,7 @@ export default function DashboardPage() {
   const [searchingManual, setSearchingManual] = useState(false);
   const [manualSaving, setManualSaving] = useState(false);
   const [summary, setSummary] = useState<AttendanceSummary | null>(null);
+  const [recentRegistrations, setRecentRegistrations] = useState<WalkInRegistrationSummary[]>([]);
 
   const showNotice = useCallback((type: "success" | "error", message: string) => {
     setNotice({ type, message });
@@ -203,6 +211,23 @@ export default function DashboardPage() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
+  }, []);
+
+  useEffect(() => {
+    const loadRecentRegistrations = async () => {
+      try {
+        const res = await fetch("/api/client/registrations?status=REGISTERED&take=5");
+        const json = (await res.json()) as { success?: boolean; data?: WalkInRegistrationSummary[] };
+        if (json.success) setRecentRegistrations(json.data ?? []);
+      } catch {
+        setRecentRegistrations([]);
+      }
+    };
+    void loadRecentRegistrations();
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") void loadRecentRegistrations();
+    }, 60000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -308,17 +333,13 @@ export default function DashboardPage() {
         | {
             success: true;
             action?: "TIME_IN" | "TIME_OUT";
-            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; timeOut?: string | null; scannedAt: string };
+            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string };
           }
         | { success: false; error: string; lastScanTime?: string };
 
       if (res.status === 200 && data.success) {
         setPreviewUser({ id: data.user.id, firstName: data.user.firstName, lastName: data.user.lastName });
-        if ((data.action ?? "TIME_IN") === "TIME_OUT") {
-          showNotice("success", `Manual time-out saved for ${data.user.firstName} ${data.user.lastName}.`);
-        } else {
-          showNotice("success", `Manual time-in saved for ${data.user.firstName} ${data.user.lastName}.`);
-        }
+        showNotice("success", `Manual time-in saved for ${data.user.firstName} ${data.user.lastName}.`);
         setManualSearch("");
         setManualUserId("");
         setManualCandidates([]);
@@ -379,14 +400,27 @@ export default function DashboardPage() {
             ) : null}
           </div>
         ) : null}
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+          <p className="text-sm font-semibold text-slate-900">Newly registered walk-ins</p>
+          {recentRegistrations.length === 0 ? (
+            <p className="mt-1 text-xs text-slate-500">No pending registrations right now.</p>
+          ) : (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {recentRegistrations.map((row) => (
+                <span key={row.id} className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                  {row.firstName} {row.lastName} ({formatRoleLabel(row.role)})
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <Card className="surface-card border border-slate-200 p-3 sm:p-4">
         <div className="mb-2">
           <h3 className="text-sm font-semibold text-slate-900">Manual attendance fallback</h3>
           <p className="text-xs text-slate-500">
-            When the scanner fails: search the client, then save. Same rules as QR — first save today is <span className="font-medium text-slate-700">time in</span>; if they&apos;re
-            already checked in, the next save is <span className="font-medium text-slate-700">time out</span>.
+            When the scanner fails: search the client, then save time-in manually.
           </p>
         </div>
         <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto]">
@@ -409,7 +443,7 @@ export default function DashboardPage() {
             disabled={manualSaving}
             className="h-10 rounded-md bg-[#1e3a5f] px-4 text-sm font-semibold text-white hover:bg-[#1e3a5f]/90 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {manualSaving ? "Saving..." : "Save time-in / time-out"}
+            {manualSaving ? "Saving..." : "Save time-in"}
           </button>
           <button
             type="button"

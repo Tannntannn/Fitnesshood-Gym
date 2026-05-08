@@ -8,7 +8,7 @@ import { RoleBadge } from "@/components/role-badge";
 type ScanState =
   | { type: "idle" }
   | { type: "processing" }
-  | { type: "success"; name: string; role: UserRole; mode: "TIME_IN" | "TIME_OUT"; timeIn: string; timeOut?: string | null; date: string }
+  | { type: "success"; name: string; role: UserRole; mode: "TIME_IN" | "TIME_OUT"; timeIn: string; date: string }
   | { type: "error"; message: string }
   | { type: "warning"; message: string };
 
@@ -19,7 +19,6 @@ type ScanSuccessPayload = {
   role: UserRole;
   action?: "TIME_IN" | "TIME_OUT";
   timeIn: string;
-  timeOut?: string | null;
   scannedAt: string;
 };
 
@@ -81,7 +80,7 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
         | {
             success: true;
             action?: "TIME_IN" | "TIME_OUT";
-            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; timeOut?: string | null; scannedAt: string };
+            user: { id: string; firstName: string; lastName: string; role: UserRole; timeIn: string; scannedAt: string };
           }
         | { success: false; error: string; lastScanTime?: string; details?: string };
 
@@ -91,9 +90,8 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
           firstName: data.user.firstName,
           lastName: data.user.lastName,
           role: data.user.role,
-            action: data.action,
+          action: data.action,
           timeIn: data.user.timeIn,
-            timeOut: data.user.timeOut,
           scannedAt: data.user.scannedAt,
         });
         setState({
@@ -102,7 +100,6 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
           role: data.user.role,
           mode: data.action === "TIME_OUT" ? "TIME_OUT" : "TIME_IN",
           timeIn: data.user.timeIn,
-          timeOut: data.user.timeOut,
           date: data.user.scannedAt,
         });
         reset(3000);
@@ -184,11 +181,11 @@ export function ScanInput({ onScanSuccess }: { onScanSuccess?: (payload: ScanSuc
           <div className="flex items-center justify-center">
             <CheckCircle2 className="h-10 w-10 text-white" />
           </div>
-          <p className="text-xl font-bold sm:text-2xl">{state.mode === "TIME_OUT" ? "Time-out saved" : "Welcome"}, {state.name}</p>
+          <p className="text-xl font-bold sm:text-2xl">Welcome, {state.name}</p>
           <div className="flex justify-center">
             <RoleBadge role={state.role} />
           </div>
-          <p>{state.mode === "TIME_OUT" ? `Time out: ${state.timeOut ?? "-"}` : `Time in: ${state.timeIn}`}</p>
+          <p>{`Time in: ${state.timeIn}`}</p>
           <p>Date: {state.date}</p>
         </div>
       )}

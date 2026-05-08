@@ -24,7 +24,6 @@ export function AttendanceTable({
             <TableHead className="px-4 py-3 font-semibold">Date</TableHead>
             <TableHead className="px-4 py-3 font-semibold">Day</TableHead>
             <TableHead className="px-4 py-3 font-semibold">Time In</TableHead>
-            <TableHead className="px-4 py-3 font-semibold">Time Out</TableHead>
             {onDelete ? <TableHead className="px-4 py-3 font-semibold">Actions</TableHead> : null}
           </TableRow>
         </TableHeader>
@@ -39,7 +38,6 @@ export function AttendanceTable({
               <TableCell className="px-4 py-3 whitespace-nowrap">{format(new Date(item.date), "MMMM d, yyyy")}</TableCell>
               <TableCell className="px-4 py-3">{item.dayOfWeek}</TableCell>
               <TableCell className="px-4 py-3 whitespace-nowrap">{item.timeIn}</TableCell>
-              <TableCell className="px-4 py-3 whitespace-nowrap">{item.timeOut ?? "Inside"}</TableCell>
               {onDelete ? (
                 <TableCell className="px-4 py-3">
                   <Button
@@ -56,7 +54,7 @@ export function AttendanceTable({
           ))}
           {rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={onDelete ? 10 : 9} className="px-4 py-8 text-center text-slate-500">
+              <TableCell colSpan={onDelete ? 9 : 8} className="px-4 py-8 text-center text-slate-500">
                 No attendance records found.
               </TableCell>
             </TableRow>

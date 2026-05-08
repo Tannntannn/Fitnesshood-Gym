@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PaymentMethod } from "@prisma/client";
+import { PaymentMethod, PaymentTransactionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { sanitizePaymentReference, toMoney } from "@/lib/payment";
 import { requireAdminSession } from "@/lib/admin-auth";
@@ -23,10 +23,13 @@ type ImportRow = {
   isSplit?: boolean;
   notes?: string | null;
   paymentReference?: string | null;
+  orNumber?: string | null;
   splitPayments?: ImportSplit[];
+  transactionType?: PaymentTransactionType | null;
 };
 
 const METHOD_SET = new Set<string>(Object.values(PaymentMethod));
+const TRANSACTION_TYPE_SET = new Set<string>(Object.values(PaymentTransactionType));
 
 export async function POST(request: Request) {
   const session = await requireAdminSession();
@@ -68,11 +71,23 @@ export async function POST(request: Request) {
         }
 
         const user = await prisma.user.findUnique({ where: { id: row.userId }, select: { id: true } });
-        const service = await prisma.service.findUnique({ where: { id: row.serviceId }, select: { id: true } });
+        const service = await prisma.service.findUnique({
+          where: { id: row.serviceId },
+          select: { id: true, name: true },
+        });
         if (!user || !service) {
           skipped += 1;
           continue;
         }
+        const requestedTypeRaw = String(row.transactionType ?? "").trim().toUpperCase();
+        if (requestedTypeRaw && !TRANSACTION_TYPE_SET.has(requestedTypeRaw)) {
+          skipped += 1;
+          continue;
+        }
+        const transactionType = (
+          requestedTypeRaw ||
+          (service.name === "Membership" ? "MONTHLY_FEE" : "LEGACY")
+        ) as PaymentTransactionType;
 
         const existing = await prisma.payment.findFirst({
           where: {
@@ -101,15 +116,22 @@ export async function POST(request: Request) {
               isSplit: Boolean(row.isSplit),
               notes: row.notes?.trim() || null,
               paymentReference: sanitizePaymentReference(row.paymentReference),
+              orNumber: sanitizePaymentReference(row.orNumber),
             },
           });
 
-          if (row.grossAmount !== undefined || row.discountPercent !== undefined || row.discountAmount !== undefined) {
+          if (
+            row.grossAmount !== undefined ||
+            row.discountPercent !== undefined ||
+            row.discountAmount !== undefined ||
+            transactionType
+          ) {
             await tx.$executeRaw`
               UPDATE "Payment"
               SET "grossAmount" = ${row.grossAmount !== undefined && row.grossAmount !== null ? toMoney(Number(row.grossAmount)) : null},
                   "discountPercent" = ${row.discountPercent ?? null},
-                  "discountAmount" = ${row.discountAmount !== undefined && row.discountAmount !== null ? toMoney(Number(row.discountAmount)) : null}
+                  "discountAmount" = ${row.discountAmount !== undefined && row.discountAmount !== null ? toMoney(Number(row.discountAmount)) : null},
+                  "transactionType" = ${transactionType}::"PaymentTransactionType"
               WHERE "id" = ${payment.id}
             `;
           }

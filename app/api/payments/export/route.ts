@@ -24,12 +24,14 @@ export async function GET(request: Request) {
         grossAmount: true,
         discountPercent: true,
         discountAmount: true,
+        transactionType: true,
         paymentMethod: true,
         collectionStatus: true,
         paidAt: true,
         isSplit: true,
         notes: true,
         paymentReference: true,
+        orNumber: true,
         splitPayments: {
           select: {
             method: true,

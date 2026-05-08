@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { format } from "date-fns";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { differenceInCalendarDays, format } from "date-fns";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { nowInPH } from "@/lib/time";
 
 type ManagedMember = {
   id: string;
@@ -13,6 +15,8 @@ type ManagedMember = {
   contactNo: string;
   membershipStart: string | null;
   membershipExpiry: string | null;
+  fullMembershipExpiry?: string | null;
+  createdAt?: string | null;
   membershipTier: string | null;
   lockInLabel: string | null;
   monthlyFeeLabel: string | null;
@@ -27,16 +31,282 @@ type ManagedMember = {
   remainingBalance: string | null;
   totalContractPrice: string | null;
   contractPaidToDate: string | null;
+  tierLockInTemplateMonths?: number | null;
+  tierLockInPaidMonths?: number | null;
   membershipPenalty: boolean;
   membershipPenaltySource: "AUTO" | "MANUAL" | null;
   membershipPenaltyNotes: string | null;
   tier: string;
   daysLeft: number | null;
   membershipStatus: "ACTIVE" | "EXPIRING_SOON" | "EXPIRED" | "NO_EXPIRY";
+  /** Latest attendance scan (any role snapshot) for inactivity rules. */
+  lastAttendanceAt?: string | null;
 };
 
 /** Synthetic tab: all members with penalty (any tier). */
 const PENALTY_TAB = "__penalty__";
+/** Expired members with no visit or last visit 30+ days ago (any tier). */
+const NOT_ACTIVE_TAB = "__not_active__";
+/** All members in one spreadsheet (any tier). */
+const OVERALL_TAB = "__overall__";
+
+type OutwardStatus = "Active" | "Expiring soon" | "Expired" | "Not active";
+
+type MmSortKey =
+  | "name"
+  | "contact"
+  | "status"
+  | "lockIn"
+  | "tier"
+  | "daysLeft"
+  | "start"
+  | "expiry"
+  | "join"
+  | "membershipEnds"
+  | "grace"
+  | "monthlyFee"
+  | "membershipFee"
+  | "freeze"
+  | "notes"
+  | "lastVisit";
+
+function getOutwardStatus(member: ManagedMember): OutwardStatus {
+  const s = member.membershipStatus;
+  if (s === "ACTIVE" || s === "NO_EXPIRY") return "Active";
+  if (s === "EXPIRING_SOON") return "Expiring soon";
+  if (s === "EXPIRED") {
+    const raw = member.lastAttendanceAt;
+    if (!raw) return "Not active";
+    const daysSince = differenceInCalendarDays(nowInPH(), new Date(raw));
+    if (daysSince >= 30) return "Not active";
+    return "Expired";
+  }
+  return "Active";
+}
+
+/** Roster order: Active (top) → Expiring soon → Expired → Not active (bottom). */
+function rosterStatusGroupRank(member: ManagedMember): number {
+  const o = getOutwardStatus(member);
+  if (o === "Active") return 0;
+  if (o === "Expiring soon") return 1;
+  if (o === "Expired") return 2;
+  return 3;
+}
+
+function lockInPillClass(label: string | null | undefined): string {
+  const t = (label ?? "").toLowerCase();
+  if (t.includes("12 month")) return "bg-rose-600/90 text-white ring-1 ring-rose-500/50";
+  if (t.includes("6 month")) return "bg-sky-600/90 text-white ring-1 ring-sky-500/50";
+  if (t.includes("3 month")) return "bg-amber-500/90 text-white ring-1 ring-amber-400/50";
+  if (t.includes("no lock")) return "bg-slate-500/90 text-white ring-1 ring-slate-400/50";
+  return "bg-slate-600/90 text-white ring-1 ring-slate-500/50";
+}
+
+function extractLockInLeftMonths(label: string | null | undefined): number | null {
+  const txt = (label ?? "").trim().toLowerCase();
+  if (!txt || txt.includes("no lock")) return 0;
+  const m = txt.match(/(\d+)\s*months?/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : null;
+}
+
+function lockInPaidMonths(left: number | null, template: number | null): number | null {
+  if (left == null || template == null) return null;
+  const t = Math.max(0, Math.trunc(template));
+  const l = Math.max(0, Math.min(t, Math.trunc(left)));
+  return Math.max(0, t - l);
+}
+
+function tierPillClass(tierKey: string): string {
+  switch (tierKey) {
+    case "Silver":
+      return "bg-slate-300 text-slate-900 ring-1 ring-slate-400/80";
+    case "Gold":
+      return "bg-yellow-400 text-yellow-950 ring-1 ring-yellow-500/60";
+    case "Platinum":
+      return "bg-cyan-200 text-cyan-950 ring-1 ring-cyan-400/70";
+    case "Bronze":
+      return "bg-amber-700 text-white ring-1 ring-amber-600/60";
+    case "Students":
+      return "bg-indigo-600 text-white ring-1 ring-indigo-500/50";
+    case "Founding Member":
+      return "bg-rose-600 text-white ring-1 ring-rose-500/50";
+    default:
+      return "bg-slate-500 text-white ring-1 ring-slate-400/50";
+  }
+}
+
+function statusPillClass(status: OutwardStatus): string {
+  switch (status) {
+    case "Active":
+      return "bg-emerald-600 text-white ring-1 ring-emerald-500/50";
+    case "Expiring soon":
+      return "bg-amber-500 text-white ring-1 ring-amber-400/50";
+    case "Expired":
+      return "bg-red-600 text-white ring-1 ring-red-500/50";
+    case "Not active":
+      return "bg-slate-600 text-white ring-1 ring-slate-500/50";
+    default:
+      return "bg-slate-500 text-white";
+  }
+}
+
+function formatLongDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return format(d, "MMMM d, yyyy");
+}
+
+/** `type="date"` value; avoids throwing on invalid ISO from the API. */
+function toDateInputValue(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDateSafe(iso: string | null | undefined, pattern: string, empty: string): string {
+  if (!iso) return empty;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return empty;
+  return format(d, pattern);
+}
+
+const EDIT_MODAL_TIER_VALUES = new Set([
+  "Bronze",
+  "Silver",
+  "Gold",
+  "Platinum",
+  "Students",
+  "Founding Member",
+  "Unassigned",
+]);
+
+function editModalTierSelectValue(member: ManagedMember): string {
+  const raw = member.membershipTier?.trim() || (member.tier !== "Unassigned" ? member.tier : "Unassigned");
+  return EDIT_MODAL_TIER_VALUES.has(raw) ? raw : "Unassigned";
+}
+
+function freezeStatusSelectFormValue(status: string | null | undefined): string {
+  const fs = (status ?? "").toUpperCase();
+  return fs === "ACTIVE" || fs === "COMPLETED" ? fs : "";
+}
+
+function mmSortCompare(a: ManagedMember, b: ManagedMember, key: MmSortKey, dir: number): number {
+  const str = (v: string | null | undefined) => (v ?? "").trim();
+  const numOr = (n: number | null | undefined, empty: number) =>
+    n == null || !Number.isFinite(n) ? empty : n;
+  let cmp = 0;
+  switch (key) {
+    case "name":
+      cmp = `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`, undefined, { sensitivity: "base" });
+      break;
+    case "contact":
+      cmp = str(a.contactNo).localeCompare(str(b.contactNo), undefined, { numeric: true });
+      break;
+    case "status": {
+      const rank = (m: ManagedMember) => {
+        const o = getOutwardStatus(m);
+        if (o === "Active") return 0;
+        if (o === "Expiring soon") return 1;
+        if (o === "Expired") return 2;
+        return 3;
+      };
+      cmp = rank(a) - rank(b);
+      if (cmp === 0) cmp = numOr(a.daysLeft, 99999) - numOr(b.daysLeft, 99999);
+      break;
+    }
+    case "lockIn":
+      cmp = str(a.lockInLabel).localeCompare(str(b.lockInLabel), undefined, { sensitivity: "base" });
+      break;
+    case "tier":
+      cmp = tierDisplayLabel(a.tier).localeCompare(tierDisplayLabel(b.tier), undefined, { sensitivity: "base" });
+      break;
+    case "daysLeft":
+      cmp = numOr(a.daysLeft, 99999) - numOr(b.daysLeft, 99999);
+      break;
+    case "start":
+      cmp = (a.membershipStart ? new Date(a.membershipStart).getTime() : 0) - (b.membershipStart ? new Date(b.membershipStart).getTime() : 0);
+      break;
+    case "expiry":
+      cmp = (a.membershipExpiry ? new Date(a.membershipExpiry).getTime() : 0) - (b.membershipExpiry ? new Date(b.membershipExpiry).getTime() : 0);
+      break;
+    case "join":
+      cmp = (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      break;
+    case "membershipEnds":
+      cmp =
+        (a.fullMembershipExpiry ? new Date(a.fullMembershipExpiry).getTime() : 0) -
+        (b.fullMembershipExpiry ? new Date(b.fullMembershipExpiry).getTime() : 0);
+      break;
+    case "grace":
+      cmp = (a.gracePeriodEnd ? new Date(a.gracePeriodEnd).getTime() : 0) - (b.gracePeriodEnd ? new Date(b.gracePeriodEnd).getTime() : 0);
+      break;
+    case "monthlyFee":
+      cmp = str(a.monthlyFeeLabel).localeCompare(str(b.monthlyFeeLabel), undefined, { numeric: true });
+      break;
+    case "membershipFee":
+      cmp = str(a.membershipFeeLabel).localeCompare(str(b.membershipFeeLabel), undefined, { numeric: true });
+      break;
+    case "freeze":
+      cmp = str(a.freezeStatus).localeCompare(str(b.freezeStatus), undefined, { sensitivity: "base" });
+      break;
+    case "notes":
+      cmp = str(a.membershipNotes).localeCompare(str(b.membershipNotes), undefined, { sensitivity: "base" });
+      break;
+    case "lastVisit":
+      cmp =
+        (a.lastAttendanceAt ? new Date(a.lastAttendanceAt).getTime() : 0) -
+        (b.lastAttendanceAt ? new Date(b.lastAttendanceAt).getTime() : 0);
+      break;
+    default:
+      cmp = 0;
+  }
+  if (cmp !== 0) return cmp * dir;
+  return `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`, undefined, { sensitivity: "base" }) * dir;
+}
+
+function MmSortTh({
+  label,
+  column,
+  sort,
+  onToggle,
+  align = "left",
+  className = "",
+}: {
+  label: string;
+  column: MmSortKey;
+  sort: { key: MmSortKey; dir: "asc" | "desc" };
+  onToggle: (k: MmSortKey) => void;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  const active = sort.key === column;
+  const arrow = !active ? "↕" : sort.dir === "asc" ? "▲" : "▼";
+  const ariaSort: "ascending" | "descending" | "none" = active
+    ? sort.dir === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+  const ta = align === "right" ? "text-right" : "text-left";
+  const just = align === "right" ? "justify-end" : "justify-start";
+  return (
+    <th scope="col" className={`border-b border-slate-300 bg-slate-100 px-2.5 py-2 ${ta} ${className}`} aria-sort={ariaSort}>
+      <button
+        type="button"
+        onClick={() => onToggle(column)}
+        className={`flex w-full items-center gap-1 ${just} text-[10px] font-bold uppercase tracking-wide text-slate-700 hover:text-slate-900`}
+      >
+        <span>{label}</span>
+        <span className={`text-[9px] ${active ? "text-sky-600" : "text-slate-400"}`} aria-hidden="true">
+          {arrow}
+        </span>
+      </button>
+    </th>
+  );
+}
 
 function computeContractPaidToDateStr(total: string | null, remaining: string | null): string | null {
   if (total == null || total === "") return null;
@@ -97,6 +367,8 @@ function memberForEdit(member: ManagedMember): ManagedMember {
   };
 }
 const TIER_ACCENT: Record<string, string> = {
+  [NOT_ACTIVE_TAB]: "from-slate-100 to-zinc-100 border-slate-300",
+  [OVERALL_TAB]: "from-slate-100 to-slate-200 border-slate-300",
   Bronze: "from-amber-50 to-amber-100 border-amber-200",
   Silver: "from-slate-100 to-slate-200 border-slate-300",
   Gold: "from-yellow-50 to-yellow-100 border-yellow-200",
@@ -138,15 +410,29 @@ const TIER_TAB_STYLE: Record<string, { active: string; inactive: string }> = {
     active: "border-rose-700 bg-rose-700 text-white",
     inactive: "border-rose-200 bg-rose-50 text-rose-900 hover:bg-rose-100",
   },
+  [NOT_ACTIVE_TAB]: {
+    active: "border-slate-700 bg-slate-700 text-white",
+    inactive: "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200",
+  },
+  [OVERALL_TAB]: {
+    active: "border-[#1e3a5f] bg-[#1e3a5f] text-white",
+    inactive: "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
+  },
 };
 
 export default function MembersManagementPage() {
   const [rows, setRows] = useState<ManagedMember[]>([]);
   const [editing, setEditing] = useState<ManagedMember | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTier, setActiveTier] = useState<string>("Unassigned");
+  const [activeTier, setActiveTier] = useState<string>(OVERALL_TAB);
   const [searchName, setSearchName] = useState("");
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [mmSort, setMmSort] = useState<{ key: MmSortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
+  const toggleMmSort = useCallback((key: MmSortKey) => {
+    setMmSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
+    );
+  }, []);
 
   const load = async () => {
     const res = await fetch("/api/members-management", { cache: "no-store" });
@@ -189,6 +475,15 @@ export default function MembersManagementPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!editing) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [editing]);
+
   const grouped = useMemo(() => {
     const tiers = new Map<string, ManagedMember[]>();
     rows.forEach((row) => {
@@ -201,6 +496,11 @@ export default function MembersManagementPage() {
 
   const penaltyCount = useMemo(() => rows.filter((r) => r.membershipPenalty).length, [rows]);
 
+  const notActiveCount = useMemo(
+    () => rows.filter((r) => getOutwardStatus(r) === "Not active").length,
+    [rows],
+  );
+
   const tierList = useMemo(() => {
     const present = Array.from(grouped.keys()).sort();
     const ordered = TIER_ORDER.filter((tier) => present.includes(tier));
@@ -212,151 +512,71 @@ export default function MembersManagementPage() {
     const items = tierList.map((tier) => ({ key: tier, label: tierDisplayLabel(tier), count: (grouped.get(tier) ?? []).length }));
     const fmIdx = items.findIndex((i) => i.key === "Founding Member");
     const insertAt = fmIdx >= 0 ? fmIdx + 1 : items.length;
-    items.splice(insertAt, 0, { key: PENALTY_TAB, label: "Penalty", count: penaltyCount });
-    return items;
-  }, [tierList, grouped, penaltyCount]);
+    items.splice(insertAt, 0, { key: PENALTY_TAB, label: "Penalty", count: penaltyCount }, { key: NOT_ACTIVE_TAB, label: "Not Active", count: notActiveCount });
+    return [{ key: OVERALL_TAB, label: "Overall", count: rows.length }, ...items];
+  }, [tierList, grouped, penaltyCount, notActiveCount, rows.length]);
+
+  const filteredManagementRows = useMemo(() => {
+    const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+    const query = normalize(searchName);
+    const nameMatch = (member: ManagedMember) => {
+      if (!query) return true;
+      const fullName = normalize(`${member.firstName} ${member.lastName}`);
+      const reverseName = normalize(`${member.lastName} ${member.firstName}`);
+      return fullName.includes(query) || reverseName.includes(query);
+    };
+    if (activeTier === OVERALL_TAB) return rows.filter(nameMatch);
+    if (activeTier === PENALTY_TAB) return rows.filter((m) => m.membershipPenalty && nameMatch);
+    if (activeTier === NOT_ACTIVE_TAB) return rows.filter((m) => getOutwardStatus(m) === "Not active" && nameMatch);
+    return (grouped.get(activeTier) ?? []).filter(nameMatch);
+  }, [rows, grouped, activeTier, searchName]);
+
+  const sortedManagementRows = useMemo(() => {
+    const dir = mmSort.dir === "asc" ? 1 : -1;
+    return filteredManagementRows.slice().sort((a, b) => {
+      const band = rosterStatusGroupRank(a) - rosterStatusGroupRank(b);
+      if (band !== 0) return band;
+      return mmSortCompare(a, b, mmSort.key, dir);
+    });
+  }, [filteredManagementRows, mmSort]);
+
+  const outwardCounts = useMemo(() => {
+    let active = 0;
+    let soon = 0;
+    let expired = 0;
+    let notActive = 0;
+    for (const m of filteredManagementRows) {
+      const o = getOutwardStatus(m);
+      if (o === "Active") active += 1;
+      else if (o === "Expiring soon") soon += 1;
+      else if (o === "Expired") expired += 1;
+      else notActive += 1;
+    }
+    return { active, soon, expired, notActive };
+  }, [filteredManagementRows]);
+
+  const sectionTitle = useMemo(() => {
+    if (activeTier === OVERALL_TAB) return "Overall records";
+    if (activeTier === PENALTY_TAB) return "Penalty (all tiers)";
+    if (activeTier === NOT_ACTIVE_TAB) return "Not Active (all tiers)";
+    return tierDisplayLabel(activeTier);
+  }, [activeTier]);
+
+  const headerAccent = useMemo(() => {
+    if (activeTier === PENALTY_TAB) return "from-rose-50 to-red-50 border-rose-200";
+    return TIER_ACCENT[activeTier] ?? TIER_ACCENT.Unassigned;
+  }, [activeTier]);
 
   useEffect(() => {
-    if (activeTier === PENALTY_TAB) return;
+    if (activeTier === PENALTY_TAB || activeTier === NOT_ACTIVE_TAB || activeTier === OVERALL_TAB) return;
     if (tierList.length === 0) {
-      setActiveTier("Unassigned");
+      setActiveTier(OVERALL_TAB);
       return;
     }
     if (!tierList.includes(activeTier)) {
       setActiveTier(tierList[0]);
     }
   }, [tierList, activeTier]);
-
-  const renderTable = (
-    title: string,
-    data: ManagedMember[],
-    kind: "active" | "soon" | "expired",
-    opts?: { showTierUnderName?: boolean },
-  ) => {
-    const compact = kind !== "active";
-    const colCount = compact ? 5 : 9;
-    const showTierUnderName = opts?.showTierUnderName ?? false;
-    const sorted = data
-      .slice()
-      .sort((a, b) => {
-        const aDays = a.daysLeft ?? 99999;
-        const bDays = b.daysLeft ?? 99999;
-        if (kind === "expired") return bDays - aDays;
-        return aDays - bDays;
-      });
-
-    return (
-      <Card className="surface-card overflow-hidden border border-slate-200 p-0">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
-          <h4 className="text-xs font-semibold tracking-wide text-slate-700">{title}</h4>
-          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600">{sorted.length} members</span>
-        </div>
-        <div className="max-h-[360px] overflow-auto">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 z-10 bg-slate-100 text-slate-600">
-              <tr className="text-left">
-                <th className="px-3 py-2 font-semibold">Name</th>
-                {!compact ? <th className="px-3 py-2 font-semibold">Contact</th> : null}
-                {!compact ? <th className="px-3 py-2 font-semibold">Days Left</th> : null}
-                {!compact ? <th className="px-3 py-2 font-semibold">Monthly due</th> : null}
-                {!compact ? <th className="px-3 py-2 font-semibold">Owed</th> : null}
-                <th className="px-3 py-2 font-semibold">Penalty detail</th>
-                <th className="px-3 py-2 font-semibold">Expiry</th>
-                <th className="px-3 py-2 font-semibold">Lock-in</th>
-                <th className="px-3 py-2 font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {sorted.length === 0 ? (
-                <tr>
-                  <td colSpan={colCount} className="px-3 py-6 text-center text-slate-400">
-                    No records.
-                  </td>
-                </tr>
-              ) : (
-                sorted.map((member) => (
-                  <tr
-                    key={member.id}
-                    className={`hover:bg-slate-50/70 ${member.membershipPenalty ? "bg-rose-50/40" : ""}`}
-                  >
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-slate-800">
-                          {member.firstName} {member.lastName}
-                        </span>
-                        <PenaltyNameTag member={member} />
-                      </div>
-                      {showTierUnderName ? (
-                        <p className="mt-0.5 text-[10px] font-medium text-slate-500">Tier: {tierDisplayLabel(member.tier)}</p>
-                      ) : null}
-                    </td>
-                    {!compact ? <td className="px-3 py-2 text-slate-600">{member.contactNo || "N/A"}</td> : null}
-                    {!compact ? (
-                      <td className="px-3 py-2 text-slate-700">
-                        <span
-                          className={
-                            member.daysLeft !== null && member.daysLeft < 0
-                              ? "rounded bg-red-100 px-1.5 py-0.5 text-red-700"
-                              : member.daysLeft !== null && member.daysLeft <= 7
-                                ? "rounded bg-amber-100 px-1.5 py-0.5 text-amber-700"
-                                : "rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700"
-                          }
-                        >
-                          {member.daysLeft ?? "N/A"}
-                        </span>
-                      </td>
-                    ) : null}
-                    {!compact ? (
-                      <td className="px-3 py-2 text-slate-700">
-                        {member.monthlyExpiryDate ? format(new Date(member.monthlyExpiryDate), "MMM d, yyyy") : "N/A"}
-                      </td>
-                    ) : null}
-                    {!compact ? (
-                      <td className="px-3 py-2 tabular-nums text-slate-700">
-                        {Number(member.remainingBalance ?? 0).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </td>
-                    ) : null}
-                    <td className="px-3 py-2 text-slate-700">
-                      {member.membershipPenalty ? (
-                        <span className="text-[10px] font-medium text-slate-600">
-                          {member.membershipPenaltySource === "MANUAL" ? "Manual" : "Automatic"}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-slate-700">
-                      {member.membershipExpiry ? format(new Date(member.membershipExpiry), "MMM d, yyyy") : "N/A"}
-                    </td>
-                    <td className="px-3 py-2 text-slate-700">{member.lockInLabel || "N/A"}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <Button
-                          size="sm"
-                          className="h-7 bg-[#1e3a5f] px-2.5 text-[11px] text-white hover:bg-[#1e3a5f]/90"
-                          onClick={() => setEditing(memberForEdit(member))}
-                        >
-                          Edit
-                        </Button>
-                        {member.membershipPenalty ? (
-                          <span className="rounded border border-rose-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
-                            Penalty
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    );
-  };
 
   /** One full-width table for the Penalty tab (all flagged members). */
   const renderPenaltyListTable = (data: ManagedMember[]) => {
@@ -446,7 +666,16 @@ export default function MembersManagementPage() {
                     <td className="px-3 py-2 text-slate-700">
                       {member.membershipExpiry ? format(new Date(member.membershipExpiry), "MMM d, yyyy") : "N/A"}
                     </td>
-                    <td className="px-3 py-2 text-slate-700">{member.lockInLabel || "N/A"}</td>
+                    <td className="px-3 py-2 text-slate-700">
+                      {(() => {
+                        const left = extractLockInLeftMonths(member.lockInLabel);
+                        const template = member.tierLockInTemplateMonths ?? null;
+                        const paidFromHistory = member.tierLockInPaidMonths ?? null;
+                        const paid = paidFromHistory ?? lockInPaidMonths(left, template);
+                        if (paid === null || template == null) return member.lockInLabel || "N/A";
+                        return `${paid} / ${template} mo`;
+                      })()}
+                    </td>
                     <td className="px-3 py-2 text-slate-700">
                       <span
                         className={
@@ -499,11 +728,14 @@ export default function MembersManagementPage() {
       ) : null}
       <Card className="surface-card border border-slate-200 bg-gradient-to-r from-slate-50 to-white p-3 sm:p-4">
         <h1 className="text-xl font-semibold text-slate-900">Members Management</h1>
-        <p className="text-sm text-slate-500">Use tier navigation to quickly review active, expiring soon (&lt;= 7 days), and expired members.</p>
+        <p className="text-sm text-slate-500">
+          Use <span className="font-medium text-slate-700">Overall</span> for one sortable roster of every member, or tier tabs to filter. Status reflects active, expiring soon (&lt;= 7 days), expired, and{" "}
+          <span className="font-medium text-slate-700">Not active</span> (expired with no visit in 30+ days).
+        </p>
         <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-950">
           <span className="font-semibold">Automatic penalty (two rules):</span> (1){" "}
           <span className="font-medium">Expired membership</span> and <span className="font-medium">contract balance owed</span> — flagged for{" "}
-          <span className="font-medium">every tier</span>, listed on the <span className="font-medium">Penalty</span> tab, and highlighted on their tier table with the Penalty badge. (2){" "}
+          <span className="font-medium">every tier</span>, listed on the <span className="font-medium">Penalty</span> tab (the <span className="font-medium">Not Active</span> tab is only for expired members inactive 30+ days), and highlighted on tier rosters with the Penalty badge. (2){" "}
           <span className="font-medium">Silver / Gold / Platinum</span> with <span className="font-medium">monthly due</span> passed (calendar) and balance still owed. Frozen accounts are skipped.{" "}
           Expired + balance owed is always re-flagged as automatic penalty (even if someone turned it off manually); extend membership or clear the balance to remove it. Other cases keep your <span className="font-medium">Manual</span> choice until you use &quot;Re-apply automatic penalty rules&quot;.
         </p>
@@ -556,81 +788,240 @@ export default function MembersManagementPage() {
           </Button>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Tip: Unassigned helps you quickly find members with no tier yet. <span className="font-semibold text-rose-800">Penalty</span> (after Founding Member) opens{" "}
-          <span className="font-medium">one table</span> listing every flagged member.
+          <span className="font-semibold text-[#1e3a5f]">Overall</span> shows every member in one sortable roster. Other tabs filter by tier.{" "}
+          <span className="font-semibold text-rose-800">Penalty</span> opens the flagged-member list;{" "}
+          <span className="font-semibold text-slate-800">Not Active</span> lists expired members with no visit or last visit 30+ days ago.
         </p>
       </Card>
 
-      {(() => {
-        const query = searchName.trim().toLowerCase();
-        const nameMatch = (member: ManagedMember) => {
-          if (!query) return true;
-          const fullName = `${member.firstName} ${member.lastName}`.toLowerCase();
-          const reverseName = `${member.lastName} ${member.firstName}`.toLowerCase();
-          return fullName.includes(query) || reverseName.includes(query);
-        };
-        const tierRows =
-          activeTier === PENALTY_TAB
-            ? rows.filter((member) => member.membershipPenalty && nameMatch(member))
-            : (grouped.get(activeTier) ?? []).filter(nameMatch);
-        const active = tierRows.filter((r) => r.membershipStatus === "ACTIVE" || r.membershipStatus === "NO_EXPIRY");
-        const soon = tierRows.filter((r) => r.membershipStatus === "EXPIRING_SOON");
-        const expired = tierRows.filter((r) => r.membershipStatus === "EXPIRED");
-        const sectionTitle =
-          activeTier === PENALTY_TAB ? "Penalty (all tiers)" : tierDisplayLabel(activeTier);
-        const headerAccent =
-          activeTier === PENALTY_TAB
-            ? "from-rose-50 to-red-50 border-rose-200"
-            : TIER_ACCENT[activeTier] ?? TIER_ACCENT.Unassigned;
-
-        return (
-          <section key={activeTier} className="space-y-3">
-            <div className={`rounded-xl border bg-gradient-to-r px-4 py-3 ${headerAccent}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-base font-semibold text-slate-800">{sectionTitle}</h2>
-                  {activeTier === PENALTY_TAB ? (
-                    <span className="rounded-full bg-rose-600 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
-                      Penalty list
-                    </span>
-                  ) : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-slate-700">
-                  <span className="rounded bg-white/80 px-2 py-0.5">Total: {tierRows.length}</span>
-                  {activeTier === PENALTY_TAB ? null : (
-                    <>
-                      <span className="rounded bg-emerald-100 px-2 py-0.5 text-emerald-700">Active: {active.length}</span>
-                      <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">Expiring: {soon.length}</span>
-                      <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Expired: {expired.length}</span>
-                    </>
-                  )}
-                </div>
-              </div>
+      <section key={activeTier} className="space-y-3">
+        <div className={`rounded-xl border bg-gradient-to-r px-4 py-3 ${headerAccent}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-800">{sectionTitle}</h2>
               {activeTier === PENALTY_TAB ? (
-                <p className="mt-2 text-xs text-slate-600">
-                  Single list of every member with a penalty flag. Rows are sorted by membership status (expired first), then name. Edit to clear or override, or use
-                  &quot;Re-apply automatic penalty rules&quot; in the editor.
-                </p>
+                <span className="rounded-full bg-rose-600 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+                  Penalty list
+                </span>
+              ) : activeTier === NOT_ACTIVE_TAB ? (
+                <span className="rounded-full bg-slate-700 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+                  Not Active
+                </span>
               ) : null}
             </div>
-            {activeTier === PENALTY_TAB ? (
-              renderPenaltyListTable(tierRows)
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-                {renderTable(`${sectionTitle} · Active`, active, "active")}
-                {renderTable(`${sectionTitle} · Expiring Soon`, soon, "soon")}
-                {renderTable(`${sectionTitle} · Expired`, expired, "expired")}
-              </div>
-            )}
-          </section>
-        );
-      })()}
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-slate-700">
+              <span className="rounded bg-white/80 px-2 py-0.5">Total: {filteredManagementRows.length}</span>
+              {activeTier === PENALTY_TAB || activeTier === NOT_ACTIVE_TAB ? null : (
+                <>
+                  <span className="rounded bg-emerald-100 px-2 py-0.5 text-emerald-800">Active: {outwardCounts.active}</span>
+                  <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">Expiring: {outwardCounts.soon}</span>
+                  <span className="rounded bg-red-100 px-2 py-0.5 text-red-800">Expired: {outwardCounts.expired}</span>
+                  <span className="rounded bg-slate-700 px-2 py-0.5 text-white">Not active: {outwardCounts.notActive}</span>
+                </>
+              )}
+            </div>
+          </div>
+          {activeTier === PENALTY_TAB ? (
+            <p className="mt-2 text-xs text-slate-600">
+              Single list of every member with a penalty flag. Rows are sorted by membership status (expired first), then name. Edit to clear or override, or use
+              &quot;Re-apply automatic penalty rules&quot; in the editor.
+            </p>
+          ) : activeTier === NOT_ACTIVE_TAB ? (
+            <p className="mt-2 text-xs text-slate-600">
+              Same roster as other tabs, filtered to members whose status is <span className="font-medium">Not active</span>: expired membership with no check-in on file, or last visit at least{" "}
+              <span className="font-medium">30 calendar days</span> ago. All tiers included.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-slate-600">
+              Rows are ordered <span className="font-medium">Active</span> first, then <span className="font-medium">Expiring soon</span>, then <span className="font-medium">Expired</span>, then{" "}
+              <span className="font-medium">Not active</span> at the bottom; within each group, click a column header to sort. <span className="font-medium">Not active</span> means expired with no check-in or last visit{" "}
+              <span className="font-medium">30+ days ago</span>.
+            </p>
+          )}
+        </div>
+        {activeTier === PENALTY_TAB ? (
+          renderPenaltyListTable(filteredManagementRows)
+        ) : (
+          <Card className="overflow-hidden border border-slate-300 bg-white p-0 shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="min-w-[1400px] w-full border-collapse border border-slate-300 text-left text-[11px] text-slate-800">
+                      <thead className="sticky top-0 z-10 shadow-sm">
+                        <tr>
+                          <MmSortTh label="Name" column="name" sort={mmSort} onToggle={toggleMmSort} className="min-w-[160px]" />
+                          <MmSortTh label="Contact No." column="contact" sort={mmSort} onToggle={toggleMmSort} className="min-w-[110px]" />
+                          <th
+                            scope="col"
+                            className="border-b border-slate-300 bg-slate-100 px-2.5 py-2 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600"
+                          >
+                            Locker
+                          </th>
+                          <MmSortTh label="Status" column="status" sort={mmSort} onToggle={toggleMmSort} className="min-w-[100px]" />
+                          <MmSortTh label="Lock-in (paid/template)" column="lockIn" sort={mmSort} onToggle={toggleMmSort} className="min-w-[150px]" />
+                          <MmSortTh label="Membership Tier" column="tier" sort={mmSort} onToggle={toggleMmSort} className="min-w-[130px]" />
+                          <MmSortTh label="Days Left" column="daysLeft" sort={mmSort} onToggle={toggleMmSort} className="min-w-[72px]" />
+                          <MmSortTh label="Start Date" column="start" sort={mmSort} onToggle={toggleMmSort} className="min-w-[120px]" />
+                          <MmSortTh label="Expiry Date" column="expiry" sort={mmSort} onToggle={toggleMmSort} className="min-w-[120px]" />
+                          <MmSortTh label="Join Date" column="join" sort={mmSort} onToggle={toggleMmSort} className="min-w-[120px]" />
+                          <MmSortTh label="Membership Ends" column="membershipEnds" sort={mmSort} onToggle={toggleMmSort} className="min-w-[130px]" />
+                          <MmSortTh label="Grace Period End" column="grace" sort={mmSort} onToggle={toggleMmSort} className="min-w-[130px]" />
+                          <MmSortTh label="Monthly Fee" column="monthlyFee" sort={mmSort} onToggle={toggleMmSort} className="min-w-[100px]" />
+                          <MmSortTh label="Membership Fee" column="membershipFee" sort={mmSort} onToggle={toggleMmSort} className="min-w-[110px]" />
+                          <MmSortTh label="Freeze Status" column="freeze" sort={mmSort} onToggle={toggleMmSort} className="min-w-[100px]" />
+                          <MmSortTh label="Notes" column="notes" sort={mmSort} onToggle={toggleMmSort} className="min-w-[180px]" />
+                          <MmSortTh label="Last Visit" column="lastVisit" sort={mmSort} onToggle={toggleMmSort} className="min-w-[110px]" />
+                          <th
+                            scope="col"
+                            className="sticky right-0 z-[1] min-w-[88px] border-b border-l border-slate-300 bg-slate-100 px-2.5 py-2 text-right text-[10px] font-bold uppercase tracking-wide text-slate-600"
+                          >
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedManagementRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={18} className="bg-white px-4 py-10 text-center text-slate-500">
+                              No members match this view.
+                            </td>
+                          </tr>
+                        ) : (
+                          sortedManagementRows.map((member, idx) => {
+                            const outward = getOutwardStatus(member);
+                            const lockLabel = member.lockInLabel?.trim() || "—";
+                            const lockInLeft = extractLockInLeftMonths(member.lockInLabel);
+                            const lockInTemplate = member.tierLockInTemplateMonths ?? null;
+                            const lockInPaid =
+                              member.tierLockInPaidMonths ?? lockInPaidMonths(lockInLeft, lockInTemplate);
+                            const tierKey = member.tier;
+                            const rowBg = idx % 2 === 0 ? "bg-white" : "bg-slate-50";
+                            return (
+                              <tr
+                                key={member.id}
+                                className={`border-b border-slate-200 ${rowBg} hover:bg-sky-50/80`}
+                              >
+                                <td className="px-2.5 py-2 align-middle text-slate-900">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-semibold">
+                                      {member.firstName} {member.lastName}
+                                    </span>
+                                    <PenaltyNameTag member={member} />
+                                  </div>
+                                  {activeTier === OVERALL_TAB || activeTier === NOT_ACTIVE_TAB ? (
+                                    <p className="mt-0.5 text-[10px] font-medium text-slate-500">Tier tab: {tierDisplayLabel(tierKey)}</p>
+                                  ) : null}
+                                </td>
+                                <td className="px-2.5 py-2 align-middle tabular-nums text-slate-700">{member.contactNo?.trim() || "—"}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-500">—</td>
+                                <td className="px-2.5 py-2 align-middle">
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusPillClass(outward)}`}>
+                                    {outward}
+                                  </span>
+                                </td>
+                                <td className="px-2.5 py-2 align-middle">
+                                  {lockLabel === "—" ? (
+                                    <span className="text-slate-500">—</span>
+                                  ) : (
+                                    <span
+                                      className={`inline-flex max-w-[11rem] truncate rounded-full px-2 py-0.5 text-[10px] font-semibold ${lockInPillClass(member.lockInLabel)}`}
+                                      title={
+                                        lockInPaid !== null && lockInTemplate != null
+                                          ? `${lockLabel} (paid ${lockInPaid}/${lockInTemplate} mo)`
+                                          : lockLabel
+                                      }
+                                    >
+                                      {lockInPaid !== null && lockInTemplate != null
+                                        ? `${lockInPaid}/${lockInTemplate} mo`
+                                        : lockLabel}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2.5 py-2 align-middle">
+                                  <span
+                                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${tierPillClass(tierKey)}`}
+                                    title={tierDisplayLabel(tierKey)}
+                                  >
+                                    {tierDisplayLabel(tierKey)}
+                                  </span>
+                                </td>
+                                <td className="px-2.5 py-2 align-middle tabular-nums">
+                                  <span
+                                    className={
+                                      member.daysLeft !== null && member.daysLeft < 0
+                                        ? "font-semibold text-red-600"
+                                        : member.daysLeft !== null && member.daysLeft <= 7
+                                          ? "font-semibold text-amber-700"
+                                          : "text-emerald-700"
+                                    }
+                                  >
+                                    {member.daysLeft ?? "—"}
+                                  </span>
+                                </td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.membershipStart)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.membershipExpiry)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.createdAt)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.fullMembershipExpiry)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.gracePeriodEnd)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{member.monthlyFeeLabel?.trim() || "—"}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">{member.membershipFeeLabel?.trim() || "—"}</td>
+                                <td className="px-2.5 py-2 align-middle">
+                                  {member.freezeStatus?.trim() ? (
+                                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-900 ring-1 ring-sky-200">
+                                      {member.freezeStatus}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500">None</span>
+                                  )}
+                                </td>
+                                <td className="max-w-[220px] px-2.5 py-2 align-middle text-slate-600">
+                                  <span className="line-clamp-2" title={member.membershipNotes ?? ""}>
+                                    {member.membershipNotes?.trim() || "—"}
+                                  </span>
+                                </td>
+                                <td className="px-2.5 py-2 align-middle text-slate-600">
+                                  {member.lastAttendanceAt ? format(new Date(member.lastAttendanceAt), "MMM d, yyyy") : "—"}
+                                </td>
+                                <td
+                                  className={`sticky right-0 z-[1] border-l border-slate-300 px-2.5 py-2 align-middle text-right ${rowBg}`}
+                                >
+                                  <Button
+                                    size="sm"
+                                    className="h-7 bg-[#1e3a5f] px-2.5 text-[11px] text-white hover:bg-[#1e3a5f]/90"
+                                    onClick={() => setEditing(memberForEdit(member))}
+                                  >
+                                    Edit
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+      </section>
 
-      {editing ? (
-        <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-[2px]">
-          <Card className="max-h-[92vh] w-full max-w-3xl space-y-4 overflow-y-auto border border-slate-300 bg-white p-4 sm:p-5 shadow-2xl">
+      {editing
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[102] overflow-y-auto bg-slate-900/60 backdrop-blur-[2px]"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="members-edit-modal-title"
+            >
+              <div
+                className="flex min-h-full items-center justify-center p-3 py-10 sm:p-4 sm:py-12"
+                onClick={() => {
+                  if (!loading) setEditing(null);
+                }}
+              >
+                <Card
+                  className="max-h-[min(92vh,920px)] w-full max-w-3xl space-y-4 overflow-y-auto border border-slate-300 bg-white p-4 sm:p-5 shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="text-lg font-semibold text-slate-900">
+              <h3 id="members-edit-modal-title" className="text-lg font-semibold text-slate-900">
                 Edit Membership: {editing.firstName} {editing.lastName}
               </h3>
               <Button variant="outline" className="border-slate-300 hover:bg-slate-100" onClick={() => setEditing(null)}>
@@ -643,13 +1034,7 @@ export default function MembersManagementPage() {
                 <label className="text-xs font-medium text-slate-600">Tier</label>
                 <select
                   className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/20"
-                  value={
-                    editing.membershipTier?.trim()
-                      ? editing.membershipTier.trim()
-                      : editing.tier !== "Unassigned"
-                        ? editing.tier
-                        : "Unassigned"
-                  }
+                  value={editModalTierSelectValue(editing)}
                   onChange={(e) => {
                     const next = e.target.value;
                     const tierValue = next === "Unassigned" ? null : next;
@@ -678,7 +1063,7 @@ export default function MembersManagementPage() {
                 <Input
                   className="border-slate-300 bg-white text-slate-800"
                   type="date"
-                  value={editing.membershipStart ? new Date(editing.membershipStart).toISOString().slice(0, 10) : ""}
+                  value={toDateInputValue(editing.membershipStart)}
                   onChange={(e) => setEditing({ ...editing, membershipStart: e.target.value ? `${e.target.value}T00:00:00.000Z` : null })}
                 />
               </div>
@@ -687,7 +1072,7 @@ export default function MembersManagementPage() {
                 <Input
                   className="border-slate-300 bg-white text-slate-800"
                   type="date"
-                  value={editing.membershipExpiry ? new Date(editing.membershipExpiry).toISOString().slice(0, 10) : ""}
+                  value={toDateInputValue(editing.membershipExpiry)}
                   onChange={(e) => setEditing({ ...editing, membershipExpiry: e.target.value ? `${e.target.value}T00:00:00.000Z` : null })}
                 />
               </div>
@@ -696,7 +1081,7 @@ export default function MembersManagementPage() {
                 <Input
                   className="border-slate-300 bg-white text-slate-800"
                   type="date"
-                  value={editing.gracePeriodEnd ? new Date(editing.gracePeriodEnd).toISOString().slice(0, 10) : ""}
+                  value={toDateInputValue(editing.gracePeriodEnd)}
                   onChange={(e) => setEditing({ ...editing, gracePeriodEnd: e.target.value ? `${e.target.value}T00:00:00.000Z` : null })}
                 />
               </div>
@@ -704,7 +1089,7 @@ export default function MembersManagementPage() {
                 <label className="text-xs font-medium text-slate-600">Freeze Status</label>
                 <select
                   className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/20"
-                  value={(editing.freezeStatus ?? "").toUpperCase()}
+                  value={freezeStatusSelectFormValue(editing.freezeStatus)}
                   onChange={(e) => setEditing({ ...editing, freezeStatus: e.target.value || null })}
                 >
                   <option value="">None</option>
@@ -717,7 +1102,7 @@ export default function MembersManagementPage() {
                 <Input
                   className="border-slate-300 bg-white text-slate-800"
                   type="date"
-                  value={editing.freezeStartedAt ? new Date(editing.freezeStartedAt).toISOString().slice(0, 10) : ""}
+                  value={toDateInputValue(editing.freezeStartedAt)}
                   onChange={(e) => setEditing({ ...editing, freezeStartedAt: e.target.value ? `${e.target.value}T00:00:00.000Z` : null })}
                 />
               </div>
@@ -726,7 +1111,7 @@ export default function MembersManagementPage() {
                 <Input
                   className="border-slate-300 bg-white text-slate-800"
                   type="date"
-                  value={editing.freezeEndsAt ? new Date(editing.freezeEndsAt).toISOString().slice(0, 10) : ""}
+                  value={toDateInputValue(editing.freezeEndsAt)}
                   onChange={(e) => setEditing({ ...editing, freezeEndsAt: e.target.value ? `${e.target.value}T00:00:00.000Z` : null })}
                 />
               </div>
@@ -764,11 +1149,11 @@ export default function MembersManagementPage() {
               <div className="grid gap-2 sm:grid-cols-2 text-xs text-slate-700">
                 <p>
                   <span className="font-medium text-slate-600">Membership expires:</span>{" "}
-                  {editing.membershipExpiry ? format(new Date(editing.membershipExpiry), "MMM d, yyyy") : "N/A"}
+                  {formatDateSafe(editing.membershipExpiry, "MMM d, yyyy", "N/A")}
                 </p>
                 <p>
                   <span className="font-medium text-slate-600">Monthly due:</span>{" "}
-                  {editing.monthlyExpiryDate ? format(new Date(editing.monthlyExpiryDate), "MMM d, yyyy") : "N/A"}
+                  {formatDateSafe(editing.monthlyExpiryDate, "MMM d, yyyy", "N/A")}
                 </p>
                 <p>
                   <span className="font-medium text-slate-600">Tier contract price:</span> {formatMoneyOrNA(editing.totalContractPrice)}
@@ -926,9 +1311,12 @@ export default function MembersManagementPage() {
                 Save Changes
               </Button>
             </div>
-          </Card>
-        </div>
-      ) : null}
+                </Card>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

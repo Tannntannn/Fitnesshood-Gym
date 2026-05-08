@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { CheckCircle2, ClipboardList, Receipt } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Receipt } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DashboardConfirmDialog } from "@/components/dashboard-confirm-dialog";
 import { getSalesFilterPaidAtRange } from "@/lib/sales-filter-window";
+import { MAX_MEMBERSHIP_PAY_NOW_MONTHS } from "@/lib/payment";
 
 type MemberRow = {
   id: string;
@@ -38,17 +39,18 @@ type PaymentRow = {
   paymentMethod: string;
   collectionStatus: "FULLY_PAID" | "PARTIAL";
   paidAt: string;
+  createdAt?: string | null;
+  recordedBy?: string | null;
   user: { id: string; firstName: string; lastName: string; role: string; remainingBalance: string | null; membershipTier?: string | null };
   service: { id: string; name: string; tier: string };
   paymentReference?: string | null;
+  orNumber?: string | null;
   notes?: string | null;
   splitPayments?: Array<{ id: string; method: string; amount: string; reference?: string | null }>;
   addOnSubscription?: { id: string; addonName: string } | null;
   customAddOnLabel?: string | null;
   receiptGroupId?: string | null;
 };
-
-type PaymentRecordGroup = { groupKey: string; rows: PaymentRow[] };
 
 type ConfirmResult = {
   payment: { id: string; amount: string; paymentMethod: string; collectionStatus: "FULLY_PAID" | "PARTIAL"; paidAt: string };
@@ -61,7 +63,11 @@ type ConfirmResult = {
     remainingBalance: string | null;
     monthsPaid: number;
     remainingMonths: number | null;
+    lockInPaidMonths?: number | null;
     loyaltyStars: number;
+    monthlyExpiryDate?: string | null;
+    lockInLabel?: string | null;
+    monthlyFeeLabel?: string | null;
   };
 };
 
@@ -78,6 +84,7 @@ type EditableTransaction = {
   collectionStatus: "FULLY_PAID" | "PARTIAL";
   paidAtLocal: string;
   paymentReference: string;
+  orNumber: string;
   notes: string;
   isSplit: boolean;
 };
@@ -86,12 +93,21 @@ function methodMayHaveReference(method: string): boolean {
   return method === "GCASH" || method === "MAYA" || method === "BANK_TRANSFER" || method === "CARD";
 }
 
+function paymentMethodOptionLabel(method: string): string {
+  return method
+    .toLowerCase()
+    .split("_")
+    .map((part) => (part ? `${part[0].toUpperCase()}${part.slice(1)}` : part))
+    .join(" ");
+}
+
 function paymentTrackLabel(row: PaymentRow): string | null {
   const custom = row.customAddOnLabel?.trim();
   if (custom) return `Add-on: ${custom}`;
-  if (row.transactionType === "MONTHLY_FEE") return "Monthly fee";
+  if (row.transactionType === "MONTHLY_FEE")
+    return row.service.name === "Membership" ? "Membership (monthly)" : "Monthly fee";
   if (row.transactionType === "MEMBERSHIP_CONTRACT") return "Contract";
-  if (row.transactionType === "LEGACY" && row.service.name === "Membership") return "Contract";
+  if (row.transactionType === "LEGACY" && row.service.name === "Membership") return "Membership (legacy contract)";
   if (row.transactionType === "ADD_ON")
     return row.addOnSubscription?.addonName ? `Add-on: ${row.addOnSubscription.addonName}` : "Add-on";
   return null;
@@ -115,6 +131,7 @@ function paymentRecordMatchesQuery(row: PaymentRow, qLower: string): boolean {
     row.grossAmount != null ? String(row.grossAmount) : "",
     (row.notes ?? "").trim(),
     (row.paymentReference ?? "").trim(),
+    (row.orNumber ?? "").trim(),
     (row.customAddOnLabel ?? "").trim(),
     row.addOnSubscription?.addonName ?? "",
     row.transactionType ?? "",
@@ -131,6 +148,8 @@ type ServiceCartLine = {
   lineId: string;
   serviceId: string;
   grossStr: string;
+  /** Months paying toward access now (Membership except Bronze); on SGP can differ from lock-in. */
+  paymentMonths?: string | null;
   customAddOnLabel?: string | null;
   /** YYYY-MM-DD — shown on Add-ons dashboard as next due / expiration when saving custom add-on lines. */
   addOnDueDate?: string | null;
@@ -139,6 +158,34 @@ type ServiceCartLine = {
 function newCartLineId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `line-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function isConfigurableLockInTier(service: ServiceRow | null | undefined): boolean {
+  if (!service || service.name !== "Membership") return false;
+  const tier = service.tier.trim().toLowerCase();
+  return tier === "silver" || tier === "gold" || tier === "platinum";
+}
+
+/** Membership tiers where admin can set “pay now” months (Bronze uses gross / tile only). */
+function isMembershipNonBronze(service: ServiceRow | null | undefined): boolean {
+  if (!service || service.name !== "Membership") return false;
+  return service.tier.trim().toLowerCase() !== "bronze";
+}
+
+function clampPayNowMonths(raw: unknown): number {
+  const n = Math.trunc(Number(raw));
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, n));
+}
+
+function lockInProgressFromRemaining(
+  remaining: number | null | undefined,
+  template: number | null | undefined,
+): string | null {
+  if (!Number.isFinite(Number(remaining)) || !Number.isFinite(Number(template))) return null;
+  const t = Math.max(0, Math.trunc(Number(template)));
+  const l = Math.max(0, Math.min(t, Math.trunc(Number(remaining))));
+  return `${Math.max(0, t - l)} / ${t} mo`;
 }
 
 /** Allocate whole-cent fixed discount across lines by gross share (last lines absorb remainder). */
@@ -156,11 +203,12 @@ function allocateFixedDiscountCents(grossCents: number[], discountCents: number)
 
 function buildServicesForRole(services: ServiceRow[], role: RoleFilter): ServiceRow[] {
   const membershipPlan = services.filter((service) => service.name === "Membership");
+  const bronzeMembership = membershipPlan.filter((service) => service.tier.trim().toLowerCase() === "bronze");
   const roleCore =
     role === "MEMBER"
       ? membershipPlan
       : role === "NON_MEMBER"
-        ? services.filter((service) => service.tier === "Non-member")
+        ? [...services.filter((service) => service.tier === "Non-member"), ...bronzeMembership]
         : role === "WALK_IN"
           ? services.filter((service) => service.tier === "Walk-in Student")
           : services.filter((service) => service.tier === "Walk-in Regular");
@@ -196,6 +244,190 @@ const roleTabs: Array<{ id: RoleFilter; label: string }> = [
   { id: "WALK_IN", label: "Walk-in Student" },
   { id: "WALK_IN_REGULAR", label: "Walk-in Regular" },
 ];
+
+type HistoryRoleFilter = "ALL" | RoleFilter;
+type HistorySortColumn =
+  | "paidAt"
+  | "createdAt"
+  | "customer"
+  | "role"
+  | "service"
+  | "method"
+  | "gross"
+  | "discount"
+  | "total";
+type HistorySortDirection = "asc" | "desc";
+
+const historyRoleFilters: Array<{ id: HistoryRoleFilter; label: string }> = [
+  { id: "ALL", label: "Overall" },
+  { id: "MEMBER", label: "Members" },
+  { id: "NON_MEMBER", label: "Non-members" },
+  { id: "WALK_IN_REGULAR", label: "Walk-in Regular" },
+  { id: "WALK_IN", label: "Walk-in Student" },
+];
+
+function historyRoleShortLabel(role: string): string {
+  if (role === "MEMBER") return "Member";
+  if (role === "NON_MEMBER") return "Non-member";
+  if (role === "WALK_IN") return "Walk-in Student";
+  if (role === "WALK_IN_REGULAR") return "Walk-in Regular";
+  return role;
+}
+
+function historyShortId(id: string): string {
+  if (!id) return "";
+  return id.length <= 6 ? id : id.slice(-6);
+}
+
+/**
+ * Today's calendar date in Asia/Manila as `YYYY-MM-DD`.
+ * Used to lock the payment-records date picker to today and earlier (no future selection).
+ * `en-CA` locale renders as ISO `YYYY-MM-DD`, which matches the value format of `<input type="date">`.
+ */
+function todayPHDateStr(): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(new Date());
+}
+
+/** Add `delta` days to a `YYYY-MM-DD` string, treating it as a calendar date (DST-safe via UTC math). */
+function addDaysToDateStr(value: string, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return value;
+  const [, y, mo, d] = m;
+  const base = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  base.setUTCDate(base.getUTCDate() + delta);
+  const yy = base.getUTCFullYear();
+  const mm = String(base.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(base.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+/** Color-coded pill (label + Tailwind classes) for the Role column. */
+function historyRolePill(role: string, membershipTier?: string | null): { label: string; classes: string } {
+  const tier = (membershipTier ?? "").trim().toLowerCase();
+  if (role === "MEMBER") {
+    if (tier === "bronze")
+      return { label: "Bronze", classes: "bg-amber-100 text-amber-800 ring-1 ring-amber-200" };
+    if (tier === "silver")
+      return { label: "Silver", classes: "bg-slate-200 text-slate-700 ring-1 ring-slate-300" };
+    if (tier === "gold")
+      return { label: "Gold", classes: "bg-yellow-100 text-yellow-800 ring-1 ring-yellow-300" };
+    if (tier === "platinum")
+      return { label: "Platinum", classes: "bg-cyan-100 text-cyan-800 ring-1 ring-cyan-200" };
+    return { label: "Member", classes: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200" };
+  }
+  if (role === "NON_MEMBER" && tier) {
+    const label = tier.charAt(0).toUpperCase() + tier.slice(1);
+    return { label: `${label} (Non-member)`, classes: "bg-amber-100 text-amber-800 ring-1 ring-amber-200" };
+  }
+  if (role === "NON_MEMBER")
+    return { label: "Non-member", classes: "bg-amber-100 text-amber-800 ring-1 ring-amber-200" };
+  if (role === "WALK_IN")
+    return { label: "Walk-in Student", classes: "bg-violet-100 text-violet-800 ring-1 ring-violet-200" };
+  if (role === "WALK_IN_REGULAR")
+    return { label: "Walk-in Regular", classes: "bg-fuchsia-100 text-fuchsia-800 ring-1 ring-fuchsia-200" };
+  return { label: role, classes: "bg-slate-100 text-slate-700 ring-1 ring-slate-200" };
+}
+
+/** Columns whose natural first sort is descending (recency / largest first). */
+const HISTORY_DESC_FIRST: HistorySortColumn[] = [
+  "paidAt",
+  "createdAt",
+  "gross",
+  "discount",
+  "total",
+];
+
+type HistorySortHeaderProps = {
+  label: string;
+  column: HistorySortColumn;
+  sort: { column: HistorySortColumn; direction: HistorySortDirection };
+  onToggle: (column: HistorySortColumn) => void;
+  align?: "left" | "right";
+  className?: string;
+  sortable?: boolean;
+  /** `pill` = compact toolbar button (card layout). `table` = legacy &lt;th&gt; header cell. */
+  variant?: "table" | "pill";
+};
+
+function HistorySortHeader({
+  label,
+  column,
+  sort,
+  onToggle,
+  align = "left",
+  className = "",
+  sortable = true,
+  variant = "table",
+}: HistorySortHeaderProps) {
+  const active = sortable && sort.column === column;
+  const indicator = !sortable ? "" : active ? (sort.direction === "asc" ? "▲" : "▼") : "↕";
+  const justify = align === "right" ? "justify-end" : "justify-start";
+  const textAlign = align === "right" ? "text-right" : "text-left";
+  const ariaSort: "ascending" | "descending" | "none" = active
+    ? sort.direction === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+
+  if (variant === "pill") {
+    if (!sortable) {
+      return (
+        <span className={`inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase text-slate-500 ${className}`}>
+          {label}
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => onToggle(column)}
+        aria-sort={ariaSort}
+        className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition ${className} ${
+          active ? "border-[#1e3a5f] bg-[#1e3a5f]/10 text-[#1e3a5f]" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+        }`}
+      >
+        <span>{label}</span>
+        <span className={`text-[9px] leading-none ${active ? "text-[#1e3a5f]" : "text-slate-400"}`} aria-hidden="true">
+          {indicator}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <th
+      className={`border-b border-slate-200 px-2 py-2 ${textAlign} ${className}`}
+      aria-sort={sortable ? ariaSort : undefined}
+      scope="col"
+    >
+      {sortable ? (
+        <button
+          type="button"
+          onClick={() => onToggle(column)}
+          className={`flex w-full items-center gap-1 ${justify} text-[11px] font-semibold uppercase tracking-wide transition ${
+            active ? "text-[#1e3a5f]" : "text-slate-600 hover:text-slate-800"
+          }`}
+        >
+          <span>{label}</span>
+          <span
+            className={`text-[9px] leading-none ${active ? "text-[#1e3a5f]" : "text-slate-400"}`}
+            aria-hidden="true"
+          >
+            {indicator}
+          </span>
+        </button>
+      ) : (
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">{label}</span>
+      )}
+    </th>
+  );
+}
 const monthOptions = [
   { value: 1, label: "Jan" },
   { value: 2, label: "Feb" },
@@ -244,7 +476,6 @@ export default function PaymentsPage() {
   const [discountReason, setDiscountReason] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<string>("CASH");
   const [collectionStatus, setCollectionStatus] = useState<"FULLY_PAID" | "PARTIAL">("FULLY_PAID");
-  const [membershipPaymentKind, setMembershipPaymentKind] = useState<"contract" | "monthly">("contract");
   const [customAddOnPanelOpen, setCustomAddOnPanelOpen] = useState(false);
   const [customAddOnName, setCustomAddOnName] = useState("");
   const [customAddOnPrice, setCustomAddOnPrice] = useState("");
@@ -252,6 +483,7 @@ export default function PaymentsPage() {
   const [enableSplit, setEnableSplit] = useState(false);
   const [splits, setSplits] = useState<SplitRow[]>([{ method: "CASH", amount: "", reference: "" }]);
   const [paymentReference, setPaymentReference] = useState("");
+  const [orNumber, setOrNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [salesFilterPeriod, setSalesFilterPeriod] = useState<SalesFilterPeriod>("ANNUALLY");
   const [salesFilterYear, setSalesFilterYear] = useState<number>(new Date().getFullYear());
@@ -259,6 +491,42 @@ export default function PaymentsPage() {
   const [salesMonthTo, setSalesMonthTo] = useState<number>(new Date().getMonth() + 1);
   const [salesSpecificDate, setSalesSpecificDate] = useState("");
   const [paymentRecordsSearch, setPaymentRecordsSearch] = useState("");
+  /** YYYY-MM-DD; empty = no date filter (default behaviour, full recent window). */
+  const [paymentRecordsDate, setPaymentRecordsDate] = useState("");
+  const [paymentRecordsRoleFilter, setPaymentRecordsRoleFilter] = useState<HistoryRoleFilter>("ALL");
+  const [paymentRecordsSort, setPaymentRecordsSort] = useState<{
+    column: HistorySortColumn;
+    direction: HistorySortDirection;
+  }>({ column: "paidAt", direction: "desc" });
+  const toggleHistorySort = useCallback((column: HistorySortColumn) => {
+    setPaymentRecordsSort((prev) => {
+      if (prev.column === column) {
+        return { column, direction: prev.direction === "asc" ? "desc" : "asc" };
+      }
+      return { column, direction: HISTORY_DESC_FIRST.includes(column) ? "desc" : "asc" };
+    });
+  }, []);
+  /** PH-local today (YYYY-MM-DD). Memoized once per mount; future dates are locked to this value. */
+  const todayPHStr = useMemo(() => todayPHDateStr(), []);
+  /**
+   * Step the date picker by ±1 day. Future dates are clamped: if the user clicks
+   * the next-day arrow at today (or with no date set), it is a no-op.
+   */
+  const stepHistoryDate = useCallback(
+    (delta: -1 | 1) => {
+      setPaymentRecordsDate((prev) => {
+        const base = prev || todayPHStr;
+        const next = addDaysToDateStr(base, delta);
+        if (next > todayPHStr) return prev;
+        return next;
+      });
+    },
+    [todayPHStr],
+  );
+  /** True only when there is a real date to step forward from AND it is strictly before today. */
+  const canStepForward = !!paymentRecordsDate && paymentRecordsDate < todayPHStr;
+  /** Per-service quantity (POS tile). Local-only; multiplies gross when added/updated in cart. */
+  const [quantityByService, setQuantityByService] = useState<Record<string, number>>({});
 
   const [coachRemittanceSummary, setCoachRemittanceSummary] = useState<{ total: number; count: number }>({
     total: 0,
@@ -268,6 +536,7 @@ export default function PaymentsPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [exportingPayments, setExportingPayments] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [importingPayments, setImportingPayments] = useState(false);
   const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<EditableTransaction | null>(null);
@@ -292,18 +561,24 @@ export default function PaymentsPage() {
     const pad = (n: number) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
-  const openReceipt = (paymentId: string) => {
-    window.open(`/api/payments/receipt/${paymentId}`, "_blank", "noopener,noreferrer");
+  type ReceiptSize = "thermal" | "a4";
+  const buildReceiptUrl = (paymentId: string, size: ReceiptSize): string =>
+    size === "a4" ? `/api/payments/receipt/${paymentId}?size=a4` : `/api/payments/receipt/${paymentId}`;
+  const buildMergedReceiptUrl = (paymentIds: string[], size: ReceiptSize): string => {
+    const q = encodeURIComponent(paymentIds.join(","));
+    return size === "a4" ? `/api/payments/receipt/merged?ids=${q}&size=a4` : `/api/payments/receipt/merged?ids=${q}`;
   };
-  const openMergedReceipt = (paymentIds: string[]) => {
+  const openReceipt = (paymentId: string, size: ReceiptSize = "thermal") => {
+    window.open(buildReceiptUrl(paymentId, size), "_blank", "noopener,noreferrer");
+  };
+  const openMergedReceipt = (paymentIds: string[], size: ReceiptSize = "thermal") => {
     const unique = Array.from(new Set(paymentIds.map((id) => id.trim()).filter(Boolean)));
     if (unique.length === 0) return;
     if (unique.length === 1) {
-      openReceipt(unique[0]);
+      openReceipt(unique[0], size);
       return;
     }
-    const q = encodeURIComponent(unique.join(","));
-    window.open(`/api/payments/receipt/merged?ids=${q}`, "_blank", "noopener,noreferrer");
+    window.open(buildMergedReceiptUrl(unique, size), "_blank", "noopener,noreferrer");
   };
 
   const [mergeReceiptIds, setMergeReceiptIds] = useState<string[]>([]);
@@ -314,7 +589,7 @@ export default function PaymentsPage() {
       return Array.from(new Set([...prev, ...ids]));
     });
   };
-  const openMergedReceiptFromSelection = () => {
+  const openMergedReceiptFromSelection = (size: ReceiptSize = "thermal") => {
     const rows = records.filter((r) => mergeReceiptIds.includes(r.id));
     if (rows.length < 2) {
       showNotice("error", "Select at least two payments to print a merged receipt.");
@@ -326,14 +601,22 @@ export default function PaymentsPage() {
       return;
     }
     const order = mergeReceiptIds.filter((id) => rows.some((r) => r.id === id));
-    openMergedReceipt(order);
+    openMergedReceipt(order, size);
   };
 
-  const load = async () => {
+  /**
+   * Optional `dateFilterArg` overrides `paymentRecordsDate`; pass empty string to force "all".
+   * Default (undefined) reads the current state so manual reloads respect the visible filter.
+   */
+  const load = async (dateFilterArg?: string) => {
+    const dateFilter = (dateFilterArg ?? paymentRecordsDate ?? "").trim();
+    const paymentsUrl = dateFilter
+      ? `/api/payments?limit=500&date=${encodeURIComponent(dateFilter)}`
+      : "/api/payments?limit=200";
     const [memberRes, serviceRes, paymentsRes, coachRes] = await Promise.all([
       fetch("/api/users?view=payment"),
       fetch("/api/services"),
-      fetch("/api/payments?limit=200"),
+      fetch(paymentsUrl),
       fetch("/api/coaches"),
     ]);
     const memberJson = (await memberRes.json()) as { data?: MemberRow[] };
@@ -351,7 +634,94 @@ export default function PaymentsPage() {
     return () => {
       if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     };
+    // Initial mount only; subsequent date changes are handled by the dedicated effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    void load(paymentRecordsDate);
+    // load() reads other state but is intentionally only re-run when the date changes here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentRecordsDate]);
+
+  /**
+   * Export the currently visible (filtered + sorted) payment history to .xlsx.
+   * Mirrors the table's column order and sort so a re-imported sheet matches what staff saw.
+   * `xlsx` is imported dynamically so the ~700KB module is only fetched on click.
+   */
+  const handleExportExcel = async () => {
+    if (exportingExcel) return;
+    if (flatHistoryRows.length === 0) {
+      showNotice("error", "Nothing to export — adjust the filters and try again.");
+      return;
+    }
+    try {
+      setExportingExcel(true);
+      const XLSX = await import("xlsx");
+      const sheetRows = flatHistoryRows.map((row, index) => {
+        const pill = historyRolePill(row.user.role, row.user.membershipTier);
+        const splitNote =
+          row.paymentMethod === "SPLIT" && row.splitPayments?.length
+            ? row.splitPayments
+                .map((sp) => `${sp.method}${sp.reference ? ` · ${sp.reference}` : ""}`)
+                .join(" · ")
+            : "";
+        return {
+          "#": index + 1,
+          ID: row.id,
+          Date: new Date(row.paidAt).toLocaleDateString(),
+          Created: row.createdAt ? new Date(row.createdAt).toLocaleString() : "",
+          Customer: `${row.user.firstName} ${row.user.lastName}`.trim(),
+          Role: pill.label,
+          "Membership Tier": row.user.membershipTier ?? "",
+          Service: row.service.name,
+          "Service Tier": row.service.tier,
+          Track: paymentTrackLabel(row) ?? "",
+          "Add-on Label": row.customAddOnLabel ?? "",
+          Method: paymentMethodOptionLabel(row.paymentMethod),
+          Status: row.collectionStatus === "PARTIAL" ? "Partial" : "Fully Paid",
+          "Discount Amount": Number(row.discountAmount ?? 0),
+          "Discount Type": row.discountType ?? "NONE",
+          "Discount Percent": Number(row.discountPercent ?? 0),
+          "Discount Reason": row.discountReason ?? "",
+          "Gross Amount": Number(row.grossAmount ?? row.amount),
+          "Total Paid": Number(row.amount),
+          Reference: (row.paymentReference ?? "").trim(),
+          "OR Number": (row.orNumber ?? "").trim(),
+          "Split Detail": splitNote,
+          "Recorded By": row.recordedBy ?? "",
+          Notes: (row.notes ?? "").trim(),
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(sheetRows);
+      // Auto-size columns based on header + content length (clamped to a sensible range).
+      const headers = Object.keys(sheetRows[0] ?? {});
+      ws["!cols"] = headers.map((h) => {
+        let max = h.length;
+        for (const r of sheetRows) {
+          const cell = (r as Record<string, unknown>)[h];
+          const len = String(cell ?? "").length;
+          if (len > max) max = len;
+        }
+        return { wch: Math.min(48, Math.max(8, max + 2)) };
+      });
+      const wb = XLSX.utils.book_new();
+      const sheetName =
+        paymentRecordsRoleFilter === "ALL"
+          ? "All payments"
+          : historyRoleFilters.find((f) => f.id === paymentRecordsRoleFilter)?.label ?? "Payments";
+      XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31));
+      const datePart = paymentRecordsDate || todayPHStr;
+      const filterPart =
+        paymentRecordsRoleFilter === "ALL" ? "all" : paymentRecordsRoleFilter.toLowerCase();
+      XLSX.writeFile(wb, `payment-records-${datePart}-${filterPart}.xlsx`);
+      showNotice("success", `Exported ${sheetRows.length} record(s) to Excel.`);
+    } catch {
+      showNotice("error", "Failed to export to Excel.");
+    } finally {
+      setExportingExcel(false);
+    }
+  };
 
   useEffect(() => {
     if (!editingTransaction) return;
@@ -367,21 +737,33 @@ export default function PaymentsPage() {
   }, [records]);
 
   const filteredMembers = useMemo(
-    () =>
-      members
+    () => {
+      // Whitespace-tolerant + case-insensitive — lets staff find any registered user
+      // (MEMBER, NON_MEMBER, WALK_IN, WALK_IN_REGULAR) even with stray spaces in stored names.
+      const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+      const query = normalize(clientSearch);
+      return members
         .filter((member) => {
-          const query = clientSearch.trim().toLowerCase();
           if (!query) return true;
-          const fullName = `${member.firstName} ${member.lastName}`.toLowerCase();
-          const reverseName = `${member.lastName} ${member.firstName}`.toLowerCase();
-          if (fullName.includes(query) || reverseName.includes(query)) return true;
+          const first = normalize(member.firstName);
+          const last = normalize(member.lastName);
+          const fullName = normalize(`${member.firstName} ${member.lastName}`);
+          const reverseName = normalize(`${member.lastName} ${member.firstName}`);
+          if (
+            first.includes(query) ||
+            last.includes(query) ||
+            fullName.includes(query) ||
+            reverseName.includes(query)
+          )
+            return true;
           const addonMatch = (member.addOnSubscriptions ?? []).some((sub) =>
-            sub.addonName.toLowerCase().includes(query),
+            normalize(sub.addonName).includes(query),
           );
           return addonMatch;
         })
         .slice()
-        .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`)),
+        .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`));
+    },
     [members, clientSearch],
   );
   const selectedMember = useMemo(() => members.find((member) => member.id === memberId) ?? null, [members, memberId]);
@@ -411,26 +793,11 @@ export default function PaymentsPage() {
       setSplits([{ method: "CASH", amount: "", reference: "" }]);
     }
   }, [cartLines.length, enableSplit]);
-  const getComputedAmount = (
-    service: ServiceRow | null,
-    role: RoleFilter,
-    status: "FULLY_PAID" | "PARTIAL",
-    member: MemberRow | null,
-    membershipKind: "contract" | "monthly" = "contract",
-  ) => {
+  const getComputedAmount = (service: ServiceRow | null, role: RoleFilter, member: MemberRow | null) => {
     if (!service) return "";
-    if (
-      role === "MEMBER" &&
-      service.name === "Membership" &&
-      status === "FULLY_PAID" &&
-      membershipKind === "contract"
-    ) {
-      const outstanding = Number(member?.remainingBalance ?? 0);
-      if (Number.isFinite(outstanding) && outstanding > 0) return String(outstanding);
-    }
     const baseAmount = Number(service.monthlyRate);
     if (!Number.isFinite(baseAmount) || baseAmount <= 0) return "";
-    if (role === "MEMBER" && service.name === "Membership" && status === "PARTIAL") return "";
+    if (role === "MEMBER" && service.name === "Membership") return String(baseAmount);
     return String(baseAmount);
   };
   const filteredServices = useMemo(() => {
@@ -445,13 +812,6 @@ export default function PaymentsPage() {
     () => filteredServices.filter((s) => !(s.name.trim() === "Add-on" && s.tier.trim() === "Custom")),
     [filteredServices],
   );
-  const membershipServiceForKind = useMemo(() => {
-    for (const line of cartLines) {
-      const s = services.find((x) => x.id === line.serviceId);
-      if (s?.name === "Membership" && (s.contractMonths ?? 0) > 0) return s;
-    }
-    return null;
-  }, [cartLines, services]);
   const selectedMemberBalance = useMemo(() => {
     const balance = Number(selectedMember?.remainingBalance ?? 0);
     if (!Number.isFinite(balance) || balance <= 0) return 0;
@@ -481,92 +841,90 @@ export default function PaymentsPage() {
   }, [discountKind, discountValue, grossAmountValue, discountFixed]);
   const finalAmountValue = useMemo(() => Math.max(grossAmountValue - discountAmountValue, 0), [grossAmountValue, discountAmountValue]);
 
-  const primaryCartServiceId = cartLines[0]?.serviceId;
-  useEffect(() => {
-    setMembershipPaymentKind("contract");
-  }, [primaryCartServiceId]);
-
-  useEffect(() => {
-    if (selectedMember?.role !== "MEMBER" || !selectedMember) return;
-    const outstanding = Number(selectedMember.remainingBalance ?? 0);
-    if (!Number.isFinite(outstanding) || outstanding <= 0) return;
-
-    const tier = (selectedMember.membershipTier ?? "").trim().toLowerCase();
-    if (!tier) return;
-
-    const matched =
-      filteredServices.find(
-        (service) => service.name === "Membership" && service.tier.trim().toLowerCase() === tier,
-      ) ?? null;
-    if (!matched) return;
-
-    setCartLines((prev) => {
-      if (prev.length > 0) return prev;
-      return [{ lineId: newCartLineId(), serviceId: matched.id, grossStr: String(outstanding) }];
-    });
-    setCollectionStatus("FULLY_PAID");
-  }, [selectedMember, filteredServices]);
-
-  const recordsByRole = useMemo(() => {
-    return roleTabs.reduce<Record<RoleFilter, PaymentRow[]>>(
-      (acc, roleTab) => {
-        acc[roleTab.id] = records
-          .filter((row) => row.user.role === roleTab.id)
-          .slice()
-          .sort((a, b) =>
-            `${a.user.lastName} ${a.user.firstName}`.localeCompare(`${b.user.lastName} ${b.user.firstName}`),
-          );
-        return acc;
-      },
-      { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
-    );
-    // roleTabs is module-scope, intentionally not in deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [records]);
-
-  const recordGroupsByRole = useMemo(() => {
-    const toGroups = (list: PaymentRow[]): PaymentRecordGroup[] => {
-      const bucket = new Map<string, PaymentRow[]>();
-      for (const row of list) {
-        const gk = row.receiptGroupId?.trim() ? row.receiptGroupId.trim() : `single:${row.id}`;
-        if (!bucket.has(gk)) bucket.set(gk, []);
-        bucket.get(gk)!.push(row);
-      }
-      return Array.from(bucket.entries())
-        .map(([groupKey, rows]) => ({
-          groupKey,
-          rows: rows.sort((a, b) => new Date(b.paidAt).getTime() - new Date(a.paidAt).getTime()),
-        }))
-        .sort((a, b) => {
-          const ta = Math.max(...a.rows.map((r) => new Date(r.paidAt).getTime()));
-          const tb = Math.max(...b.rows.map((r) => new Date(r.paidAt).getTime()));
-          return tb - ta;
-        });
-    };
-    return roleTabs.reduce<Record<RoleFilter, PaymentRecordGroup[]>>(
-      (acc, roleTab) => {
-        acc[roleTab.id] = toGroups(recordsByRole[roleTab.id]);
-        return acc;
-      },
-      { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordsByRole]);
-
-  const recordGroupsByRoleFiltered = useMemo(() => {
+  /** Flat, role-filtered, search-filtered + sorted rows feeding the new payment history table. */
+  const flatHistoryRows = useMemo(() => {
     const qLower = paymentRecordsSearch.trim().toLowerCase();
-    return roleTabs.reduce<Record<RoleFilter, PaymentRecordGroup[]>>(
-      (acc, roleTab) => {
-        const groups = recordGroupsByRole[roleTab.id];
-        acc[roleTab.id] = qLower
-          ? groups.filter((g) => g.rows.some((r) => paymentRecordMatchesQuery(r, qLower)))
-          : groups;
-        return acc;
-      },
-      { MEMBER: [], NON_MEMBER: [], WALK_IN: [], WALK_IN_REGULAR: [] },
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordGroupsByRole, paymentRecordsSearch]);
+    let list = records.slice();
+    if (paymentRecordsRoleFilter !== "ALL") {
+      list = list.filter((row) => row.user.role === paymentRecordsRoleFilter);
+    }
+    if (qLower) list = list.filter((row) => paymentRecordMatchesQuery(row, qLower));
+    const dir = paymentRecordsSort.direction === "asc" ? 1 : -1;
+    const col = paymentRecordsSort.column;
+    list.sort((a, b) => {
+      let cmp = 0;
+      switch (col) {
+        case "paidAt":
+          cmp = new Date(a.paidAt).getTime() - new Date(b.paidAt).getTime();
+          break;
+        case "createdAt": {
+          const ta = a.createdAt ? new Date(a.createdAt).getTime() : new Date(a.paidAt).getTime();
+          const tb = b.createdAt ? new Date(b.createdAt).getTime() : new Date(b.paidAt).getTime();
+          cmp = ta - tb;
+          break;
+        }
+        case "customer":
+          cmp = `${a.user.lastName} ${a.user.firstName}`.localeCompare(
+            `${b.user.lastName} ${b.user.firstName}`,
+          );
+          break;
+        case "role":
+          cmp = historyRoleShortLabel(a.user.role).localeCompare(historyRoleShortLabel(b.user.role));
+          break;
+        case "service":
+          cmp = `${a.service.name} ${a.service.tier}`.localeCompare(`${b.service.name} ${b.service.tier}`);
+          break;
+        case "method":
+          cmp = a.paymentMethod.localeCompare(b.paymentMethod);
+          break;
+        case "gross":
+          cmp = Number(a.grossAmount ?? a.amount) - Number(b.grossAmount ?? b.amount);
+          break;
+        case "discount":
+          cmp = Number(a.discountAmount ?? 0) - Number(b.discountAmount ?? 0);
+          break;
+        case "total":
+          cmp = Number(a.amount) - Number(b.amount);
+          break;
+      }
+      if (cmp !== 0) return cmp * dir;
+      return new Date(b.paidAt).getTime() - new Date(a.paidAt).getTime();
+    });
+    return list;
+  }, [records, paymentRecordsSearch, paymentRecordsRoleFilter, paymentRecordsSort]);
+
+  /** Counts shown next to each role-filter button, respecting the current text search. */
+  const historyRoleCounts = useMemo(() => {
+    const qLower = paymentRecordsSearch.trim().toLowerCase();
+    const counts: Record<HistoryRoleFilter, number> = {
+      ALL: 0,
+      MEMBER: 0,
+      NON_MEMBER: 0,
+      WALK_IN: 0,
+      WALK_IN_REGULAR: 0,
+    };
+    for (const row of records) {
+      if (qLower && !paymentRecordMatchesQuery(row, qLower)) continue;
+      counts.ALL += 1;
+      if (row.user.role === "MEMBER") counts.MEMBER += 1;
+      else if (row.user.role === "NON_MEMBER") counts.NON_MEMBER += 1;
+      else if (row.user.role === "WALK_IN") counts.WALK_IN += 1;
+      else if (row.user.role === "WALK_IN_REGULAR") counts.WALK_IN_REGULAR += 1;
+    }
+    return counts;
+  }, [records, paymentRecordsSearch]);
+
+  const historyTotalsForView = useMemo(() => {
+    let gross = 0;
+    let discount = 0;
+    let net = 0;
+    for (const r of flatHistoryRows) {
+      gross += Number(r.grossAmount ?? r.amount) || 0;
+      discount += Number(r.discountAmount ?? 0) || 0;
+      net += Number(r.amount) || 0;
+    }
+    return { gross, discount, net };
+  }, [flatHistoryRows]);
 
   const getChartAmount = (row: PaymentRow): number => {
     // Always use actual posted amount so split/discount totals are accurate.
@@ -762,17 +1120,97 @@ export default function PaymentsPage() {
     return { n, slotMin, gridMinWidth };
   }, [trendData.length]);
 
+  /** Per-tile quantity helpers — minimum 1, used as a multiplier for the gross when adding to cart. */
+  const shouldAutoFillFromBalance = (service: ServiceRow): boolean => {
+    if (collectionStatus !== "FULLY_PAID") return false;
+    if (service.name !== "Membership") return false;
+    if (!selectedMember || selectedMemberBalance <= 0) return false;
+    return (selectedMember.membershipTier ?? "").trim().toLowerCase() === service.tier.trim().toLowerCase();
+  };
+  const unitPriceForService = (service: ServiceRow): number => {
+    if (shouldAutoFillFromBalance(service)) {
+      return selectedMemberBalance;
+    }
+    const def = getComputedAmount(service, clientRole, selectedMember) || String(Number(service.monthlyRate) || 0);
+    const n = Number(def);
+    return Number.isFinite(n) && n > 0 ? n : Number(service.monthlyRate) || 0;
+  };
+  const getServiceQty = (serviceId: string): number => {
+    const v = quantityByService[serviceId];
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
+  };
+  const setServiceQty = (service: ServiceRow, nextQty: number) => {
+    if (service.name === "Membership") return;
+    const qty = Math.max(1, Math.floor(Number.isFinite(nextQty) ? nextQty : 1));
+    setQuantityByService((prev) => ({ ...prev, [service.id]: qty }));
+    // If this tile is in the cart, sync its gross to qty * unit price.
+    setCartLines((prev) => {
+      const idx = prev.findIndex((line) => line.serviceId === service.id && !line.customAddOnLabel);
+      if (idx < 0) return prev;
+      const next = prev.slice();
+      const current = next[idx];
+      if (isMembershipNonBronze(service)) {
+        const payMonthsRaw = Math.trunc(Number(current.paymentMonths));
+        const paymentMonths =
+          Number.isFinite(payMonthsRaw) && payMonthsRaw > 0 ? String(clampPayNowMonths(payMonthsRaw)) : String(qty);
+        const grossStr = shouldAutoFillFromBalance(service)
+          ? selectedMemberBalance.toFixed(2)
+          : ((Number(service.monthlyRate) || 0) * Number(paymentMonths)).toFixed(2);
+        next[idx] = { ...current, paymentMonths, grossStr };
+        return next;
+      }
+      const unit = unitPriceForService(service);
+      const grossStr = (unit * qty).toFixed(2);
+      next[idx] = { ...current, grossStr };
+      return next;
+    });
+  };
+  const incServiceQty = (service: ServiceRow) => setServiceQty(service, getServiceQty(service.id) + 1);
+  const decServiceQty = (service: ServiceRow) => setServiceQty(service, getServiceQty(service.id) - 1);
+
   const toggleServiceInCart = (service: ServiceRow) => {
     if (service.name.trim() === "Add-on" && service.tier.trim() === "Custom") return;
     setCartLines((prev) => {
       const idx = prev.findIndex((line) => line.serviceId === service.id && !line.customAddOnLabel);
       if (idx >= 0) return prev.filter((_, i) => i !== idx);
-      const def =
-        getComputedAmount(service, clientRole, collectionStatus, selectedMember, membershipPaymentKind) ||
-        String(Number(service.monthlyRate) || 0);
-      return [...prev, { lineId: newCartLineId(), serviceId: service.id, grossStr: def || "0" }];
+      const unit = unitPriceForService(service);
+      const qty = service.name === "Membership" ? 1 : getServiceQty(service.id);
+      const grossStr = (unit * qty).toFixed(2);
+      const nextLine: ServiceCartLine = {
+        lineId: newCartLineId(),
+        serviceId: service.id,
+        grossStr,
+      };
+      if (isMembershipNonBronze(service)) {
+        nextLine.paymentMonths = "1";
+        nextLine.grossStr = shouldAutoFillFromBalance(service)
+          ? selectedMemberBalance.toFixed(2)
+          : (Number(service.monthlyRate) || 0).toFixed(2);
+      }
+      return [...prev, nextLine];
     });
   };
+
+  useEffect(() => {
+    if (collectionStatus !== "FULLY_PAID") return;
+    if (!selectedMember || selectedMemberBalance <= 0) return;
+    setCartLines((prev) =>
+      prev.map((line) => {
+        const svc = services.find((s) => s.id === line.serviceId);
+        if (!svc || !shouldAutoFillFromBalance(svc)) return line;
+        const rate = Number(svc.monthlyRate) || 0;
+        const next: ServiceCartLine = { ...line, grossStr: selectedMemberBalance.toFixed(2) };
+        if (isMembershipNonBronze(svc) && rate > 0) {
+          const m = Math.max(
+            1,
+            Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, Math.round(selectedMemberBalance / rate) || 1),
+          );
+          next.paymentMonths = String(m);
+        }
+        return next;
+      }),
+    );
+  }, [collectionStatus, selectedMember?.id, selectedMember?.membershipTier, selectedMemberBalance, services]);
 
   const appendCustomAddOnToCart = () => {
     if (!customAddOnService) {
@@ -892,6 +1330,7 @@ export default function PaymentsPage() {
         paymentMethod: enableSplit ? "SPLIT" : paymentMethod,
         amount: finalNums[i].toFixed(2),
         ...(paymentReference.trim() ? { paymentReference: paymentReference.trim() } : {}),
+        ...(orNumber.trim() ? { orNumber: orNumber.trim() } : {}),
       });
       const duplicateRes = await fetch(`/api/payments/duplicate-check?${dupParams.toString()}`);
       const duplicateJson = (await duplicateRes.json()) as { success?: boolean; duplicate?: boolean };
@@ -946,16 +1385,32 @@ export default function PaymentsPage() {
                     ? { addOnNextDueDate: (line.addOnDueDate ?? "").trim() }
                     : {}),
                 }
-              : {
+                : {
                   transactionType:
-                    selectedMember?.role === "MEMBER" &&
                     svc?.name === "Membership" &&
-                    (svc.contractMonths ?? 0) > 0 &&
-                    membershipPaymentKind === "monthly"
+                    (selectedMember?.role === "MEMBER" || svc?.tier.trim().toLowerCase() === "bronze")
                       ? "MONTHLY_FEE"
                       : undefined,
+                  ...(isMembershipNonBronze(svc)
+                    ? {
+                        paymentMonths: Math.max(
+                          1,
+                          Math.min(
+                            MAX_MEMBERSHIP_PAY_NOW_MONTHS,
+                            Math.trunc(
+                              Number(
+                                line.paymentMonths ??
+                                  getServiceQty(line.serviceId) ??
+                                  1,
+                              ) || 1,
+                            ),
+                          ),
+                        ),
+                      }
+                    : {}),
                 }),
             paymentReference: enableSplit ? undefined : paymentReference.trim() || undefined,
+            orNumber: enableSplit ? undefined : orNumber.trim() || undefined,
             splits: enableSplit
               ? splits.map((row) => ({
                   method: row.method,
@@ -991,6 +1446,7 @@ export default function PaymentsPage() {
       setCustomAddOnName("");
       setCustomAddOnPrice("");
       setCustomAddOnDueDate("");
+      setOrNumber("");
     }
   }
 
@@ -1084,9 +1540,10 @@ export default function PaymentsPage() {
             {selectedMember?.role === "MEMBER" && selectedMember ? (
               <div className="space-y-0.5 rounded-md border border-amber-100 bg-amber-50/80 px-2 py-1.5 text-[11px] text-amber-900">
                 <p>
-                  Contract balance due:{" "}
+                  Legacy contract balance on file:{" "}
                   <span className="font-semibold">{peso(selectedMemberBalance)}</span>
                   {selectedMemberBalance <= 0 ? " (none)" : ""}
+                  <span className="font-normal"> — new membership payments use monthly tier rate only.</span>
                 </p>
                 <p>Membership tier on file: {selectedMember.membershipTier ?? "Not set"}</p>
               </div>
@@ -1147,31 +1604,71 @@ export default function PaymentsPage() {
                   (line) => line.serviceId === service.id && !(line.customAddOnLabel ?? "").trim(),
                 );
                 const label =
-                  service.contractMonths === 0 ? `${service.name} (No Contract)` : `${service.name} · ${service.tier}`;
-                const price = Number(service.monthlyRate) || 0;
+                  service.contractMonths === 0 && service.name !== "Membership"
+                    ? `${service.name} (No Contract)`
+                    : `${service.name} · ${service.tier}`;
+                const price = unitPriceForService(service);
                 const initial = (service.name || "?").slice(0, 1).toUpperCase();
+                const qty = getServiceQty(service.id);
                 return (
-                  <button
+                  <div
                     key={service.id}
-                    type="button"
-                    onClick={() => toggleServiceInCart(service)}
-                    className={`group relative flex aspect-square flex-col overflow-hidden rounded-2xl border-2 text-left shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e3a5f] focus-visible:ring-offset-2 ${
+                    className={`flex w-full min-w-0 flex-col rounded-lg border bg-white shadow-sm transition ${
                       inCart
-                        ? "border-[#1e3a5f] ring-2 ring-[#1e3a5f]/30"
-                        : "border-transparent hover:border-slate-300"
+                        ? "border-[#1e3a5f] ring-1 ring-[#1e3a5f]/30"
+                        : "border-slate-200 hover:border-slate-300"
                     }`}
                   >
-                    <div className="absolute inset-0 bg-gradient-to-b from-slate-200 via-slate-300 to-slate-600" />
-                    <div className="relative flex flex-1 items-center justify-center pt-2">
-                      <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/90 text-2xl font-bold text-slate-600 shadow-inner">
+                    <button
+                      type="button"
+                      onClick={() => toggleServiceInCart(service)}
+                      className="flex w-full min-w-0 items-center gap-2 px-2.5 pt-2 pb-1.5 text-left focus:outline-none focus-visible:bg-slate-50"
+                      title={inCart ? "Remove from cart" : "Add to cart"}
+                    >
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-100 text-xs font-bold text-slate-600">
                         {initial}
                       </span>
-                    </div>
-                    <div className="relative z-10 mt-auto bg-gradient-to-t from-black/75 via-black/45 to-transparent px-2.5 pb-2.5 pt-8">
-                      <p className="line-clamp-2 text-[11px] font-semibold leading-tight text-white drop-shadow-sm">{label}</p>
-                      <p className="mt-0.5 text-[11px] font-medium text-white/90">{peso(price)}</p>
-                    </div>
-                  </button>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[11px] font-semibold leading-tight text-slate-800">{label}</span>
+                        <span className="mt-0.5 block truncate text-[11px] font-medium text-slate-500">{peso(price)}</span>
+                      </span>
+                      {inCart ? (
+                        <span className="shrink-0 rounded bg-[#1e3a5f] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                          In cart
+                        </span>
+                      ) : null}
+                    </button>
+                    {service.name !== "Membership" ? (
+                      <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-2.5 py-1.5">
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Qty</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => decServiceQty(service)}
+                            disabled={qty <= 1}
+                            aria-label={`Decrease quantity for ${label}`}
+                            className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-sm font-semibold leading-none text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-label={`Quantity for ${label}`}
+                            className="min-w-[1.5rem] text-center text-xs font-semibold tabular-nums text-slate-800"
+                          >
+                            {qty}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => incServiceQty(service)}
+                            aria-label={`Increase quantity for ${label}`}
+                            className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-sm font-semibold leading-none text-slate-700 transition hover:bg-slate-50"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
@@ -1238,10 +1735,11 @@ export default function PaymentsPage() {
                   {cartLines.map((line) => {
                     const customLbl = (line.customAddOnLabel ?? "").trim();
                     const svc = services.find((s) => s.id === line.serviceId);
+                    const showPayNowMonths = Boolean(svc && isMembershipNonBronze(svc));
                     const title = customLbl
                       ? `Add-on: ${customLbl}`
                       : svc
-                        ? svc.contractMonths === 0
+                        ? svc.contractMonths === 0 && svc.name !== "Membership"
                           ? `${svc.name} (No Contract)`
                           : `${svc.name} — ${svc.tier}`
                         : line.serviceId;
@@ -1258,6 +1756,85 @@ export default function PaymentsPage() {
                             )
                           }
                         />
+                        {showPayNowMonths && svc ? (
+                          <div className="flex flex-col gap-0.5">
+                            <label className="text-[10px] font-medium text-slate-500">
+                              Pay now (months){" "}
+                              <span className="font-normal text-slate-400">(1–{MAX_MEMBERSHIP_PAY_NOW_MONTHS})</span>
+                            </label>
+                            <div className="flex h-9 items-center gap-1">
+                              <button
+                                type="button"
+                                aria-label="Decrease pay now months"
+                                disabled={clampPayNowMonths(line.paymentMonths ?? 1) <= 1}
+                                className="flex h-9 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-base font-semibold leading-none text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                onClick={() => {
+                                  const cur = clampPayNowMonths(line.paymentMonths ?? 1);
+                                  const months = Math.max(1, cur - 1);
+                                  const monthlyRate = Number(svc.monthlyRate) || 0;
+                                  const nextGross = shouldAutoFillFromBalance(svc)
+                                    ? selectedMemberBalance.toFixed(2)
+                                    : (monthlyRate * months).toFixed(2);
+                                  setCartLines((prev) =>
+                                    prev.map((l) =>
+                                      l.lineId === line.lineId
+                                        ? { ...l, paymentMonths: String(months), grossStr: nextGross }
+                                        : l,
+                                    ),
+                                  );
+                                }}
+                              >
+                                −
+                              </button>
+                              <Input
+                                className="h-9 w-14 min-w-[3.5rem] shrink-0 text-center tabular-nums"
+                                inputMode="numeric"
+                                value={line.paymentMonths ?? "1"}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/[^\d]/g, "");
+                                  const months = clampPayNowMonths(raw || 1);
+                                  const monthlyRate = Number(svc.monthlyRate) || 0;
+                                  const nextGross = shouldAutoFillFromBalance(svc)
+                                    ? selectedMemberBalance.toFixed(2)
+                                    : (monthlyRate * months).toFixed(2);
+                                  setCartLines((prev) =>
+                                    prev.map((l) =>
+                                      l.lineId === line.lineId
+                                        ? { ...l, paymentMonths: String(months), grossStr: nextGross }
+                                        : l,
+                                    ),
+                                  );
+                                }}
+                              />
+                              <button
+                                type="button"
+                                aria-label="Increase pay now months"
+                                disabled={
+                                  clampPayNowMonths(line.paymentMonths ?? 1) >=
+                                  MAX_MEMBERSHIP_PAY_NOW_MONTHS
+                                }
+                                className="flex h-9 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-base font-semibold leading-none text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                onClick={() => {
+                                  const cur = clampPayNowMonths(line.paymentMonths ?? 1);
+                                  const months = Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, cur + 1);
+                                  const monthlyRate = Number(svc.monthlyRate) || 0;
+                                  const nextGross = shouldAutoFillFromBalance(svc)
+                                    ? selectedMemberBalance.toFixed(2)
+                                    : (monthlyRate * months).toFixed(2);
+                                  setCartLines((prev) =>
+                                    prev.map((l) =>
+                                      l.lineId === line.lineId
+                                        ? { ...l, paymentMonths: String(months), grossStr: nextGross }
+                                        : l,
+                                    ),
+                                  );
+                                }}
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                         {customLbl ? (
                           <div className="flex flex-col gap-0.5">
                             <label className="text-[10px] font-medium text-slate-500">Next due / expires</label>
@@ -1357,59 +1934,25 @@ export default function PaymentsPage() {
             >
               {methodOptions.map((method) => (
                 <option key={method} value={method}>
-                  {method}
+                  {paymentMethodOptionLabel(method)}
                 </option>
               ))}
             </select>
           </div>
-          {selectedMember?.role === "MEMBER" && membershipServiceForKind ? (
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-xs font-medium text-slate-600">Payment applies to</label>
-              <select
-                className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
-                value={membershipPaymentKind}
-                onChange={(e) => {
-                  const next = e.target.value as "contract" | "monthly";
-                  setMembershipPaymentKind(next);
-                  if (next === "monthly") setCollectionStatus("FULLY_PAID");
-                }}
-              >
-                <option value="contract">Contract (lock-in balance &amp; tier)</option>
-                <option value="monthly">Monthly gym access (extends monthly cycle)</option>
-              </select>
-              <p className="text-[11px] text-slate-500">
-                Contract payments update lock-in coverage. Monthly payments only extend the gym access cycle and do not change
-                contract balance.
-              </p>
-            </div>
-          ) : null}
-          {selectedMember?.role === "MEMBER" && membershipServiceForKind && membershipPaymentKind === "contract" ? (
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-600">Membership Payment Status</label>
-              <select
-                className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
-                value={collectionStatus}
-                onChange={(e) => {
-                  const nextStatus = e.target.value as "FULLY_PAID" | "PARTIAL";
-                  setCollectionStatus(nextStatus);
-                  const mSvc = membershipServiceForKind;
-                  if (!mSvc) return;
-                  const nextAmt = getComputedAmount(mSvc, clientRole, nextStatus, selectedMember, membershipPaymentKind);
-                  setCartLines((prev) =>
-                    prev.map((line) =>
-                      line.serviceId === mSvc.id ? { ...line, grossStr: nextAmt || line.grossStr } : line,
-                    ),
-                  );
-                }}
-              >
-                <option value="FULLY_PAID">Fully Paid</option>
-                <option value="PARTIAL">Partial</option>
-              </select>
-              <p className="text-[11px] text-slate-500">
-                Fully Paid auto-fills from tier pricing. Partial keeps amount manual so you can enter custom payment.
-              </p>
-            </div>
-          ) : null}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-600">Collection status</label>
+            <select
+              className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+              value={collectionStatus}
+              onChange={(e) => setCollectionStatus(e.target.value as "FULLY_PAID" | "PARTIAL")}
+            >
+              <option value="FULLY_PAID">Fully Paid</option>
+              <option value="PARTIAL">Partial</option>
+            </select>
+            <p className="text-[11px] text-slate-500">
+              Use Partial when only part of the expected amount is collected now.
+            </p>
+          </div>
           {!enableSplit && methodMayHaveReference(paymentMethod) ? (
             <div className="space-y-1.5 sm:col-span-2">
               <label className="text-xs font-medium text-slate-600">Online payment reference</label>
@@ -1423,6 +1966,18 @@ export default function PaymentsPage() {
               <p className="text-[11px] text-slate-500">Stored for GCash, Maya, bank, or card traceability.</p>
             </div>
           ) : null}
+          {!enableSplit ? (
+            <div className="space-y-1.5 sm:col-span-2">
+              <label className="text-xs font-medium text-slate-600">OR number</label>
+              <Input
+                value={orNumber}
+                onChange={(e) => setOrNumber(e.target.value)}
+                placeholder="Official receipt # (optional)"
+                className="font-mono text-xs"
+                autoComplete="off"
+              />
+            </div>
+          ) : null}
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -1434,7 +1989,10 @@ export default function PaymentsPage() {
               onChange={(e) => {
                 const checked = e.target.checked;
                 setEnableSplit(checked);
-                if (checked) setPaymentReference("");
+                if (checked) {
+                  setPaymentReference("");
+                  setOrNumber("");
+                }
               }}
               className="h-4 w-4 rounded border-slate-300 disabled:opacity-50"
             />
@@ -1467,7 +2025,7 @@ export default function PaymentsPage() {
                   >
                     {methodOptions.map((method) => (
                       <option key={method} value={method}>
-                        {method}
+                        {paymentMethodOptionLabel(method)}
                       </option>
                     ))}
                   </select>
@@ -1580,7 +2138,7 @@ export default function PaymentsPage() {
                     const title = customLbl
                       ? `Add-on: ${customLbl}`
                       : svc
-                        ? svc.contractMonths === 0
+                        ? svc.contractMonths === 0 && svc.name !== "Membership"
                           ? `${svc.name} (No Contract)`
                           : `${svc.name} — ${svc.tier}`
                         : line.serviceId;
@@ -1603,9 +2161,16 @@ export default function PaymentsPage() {
                             </span>
                           </p>
                         ) : null}
-                        {svc && svc.contractMonths > 0 && selectedMember?.role === "MEMBER" ? (
+                        {svc && svc.name === "Membership" ? (
                           <p className="mt-1 text-[11px] text-slate-500">
-                            Contract {svc.contractMonths} mo · Lock-in {peso(Number(svc.contractPrice) || 0)}
+                            Per month {peso(Number(svc.monthlyRate) || 0)}
+                            {isMembershipNonBronze(svc)
+                                ? ` · Pay now ${Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, Number(line.paymentMonths ?? 1) || 1))} mo · Lock-in ${Math.max(0, Number(svc.contractMonths) || 0)} mo`
+                                : svc.contractMonths > 1
+                                  ? ` · Lock-in ${svc.contractMonths} mo (set under Services)`
+                                  : svc.contractMonths === 1
+                                    ? " · Lock-in 1 mo (set under Services)"
+                                    : " · No lock-in"}
                           </p>
                         ) : null}
                       </li>
@@ -1629,7 +2194,7 @@ export default function PaymentsPage() {
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="rounded-md bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600 ring-1 ring-slate-200">
-                      {enableSplit ? "Split" : paymentMethod}
+                      {enableSplit ? "Split" : paymentMethodOptionLabel(paymentMethod)}
                     </span>
                     {enableSplit ? (
                       <span className="text-[10px] text-slate-500">Split rows must match final amount on the left.</span>
@@ -1672,19 +2237,72 @@ export default function PaymentsPage() {
                       <dd className="mt-0.5 font-semibold text-slate-900">{success.updatedMember.daysLeft ?? "—"}</dd>
                     </div>
                     <div className="rounded-lg bg-white/90 px-2.5 py-2 ring-1 ring-emerald-100">
-                      <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/85">Months paid</dt>
-                      <dd className="mt-0.5 font-semibold text-slate-900">{success.updatedMember.monthsPaid}</dd>
-                    </div>
-                    <div className="rounded-lg bg-white/90 px-2.5 py-2 ring-1 ring-emerald-100">
-                      <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/85">Remaining mo.</dt>
-                      <dd className="mt-0.5 font-semibold text-slate-900">{success.updatedMember.remainingMonths ?? "—"}</dd>
-                    </div>
-                    <div className="rounded-lg bg-white/90 px-2.5 py-2 ring-1 ring-emerald-100">
-                      <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/85">Balance due</dt>
+                      <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/85">Monthly thru</dt>
                       <dd className="mt-0.5 font-semibold text-slate-900">
-                        ₱{Number(success.updatedMember.remainingBalance ?? 0).toFixed(2)}
+                        {success.updatedMember.monthlyExpiryDate
+                          ? new Date(success.updatedMember.monthlyExpiryDate).toLocaleDateString()
+                          : "—"}
                       </dd>
                     </div>
+                    <div className="col-span-2 rounded-lg bg-white/90 px-2.5 py-2 ring-1 ring-emerald-100">
+                      <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/85">Lock-in progress</dt>
+                      <dd className="mt-0.5 font-semibold text-slate-900">
+                        {(() => {
+                          const tierKey = (success.updatedMember.membershipTier ?? "").trim().toLowerCase();
+                          const tierService = services.find(
+                            (s) => s.name === "Membership" && s.tier.trim().toLowerCase() === tierKey,
+                          );
+                          const template = Math.max(0, Math.trunc(Number(tierService?.contractMonths ?? 0) || 0));
+                          const paidFromHistory =
+                            success.updatedMember.lockInPaidMonths == null
+                              ? null
+                              : Math.max(
+                                  0,
+                                  Math.min(template, Math.trunc(Number(success.updatedMember.lockInPaidMonths) || 0)),
+                                );
+                          const left = Math.max(
+                            0,
+                            Math.min(template, Math.trunc(Number(success.updatedMember.remainingMonths ?? template) || 0)),
+                          );
+                          const paid = paidFromHistory ?? Math.max(0, template - left);
+                          if (template <= 0) return success.updatedMember.lockInLabel ?? "No lock-in";
+                          return `${paid}/${template} mo paid`;
+                        })()}
+                      </dd>
+                      {success.updatedMember.lockInLabel ? (
+                        <p className="mt-1 text-[10px] text-slate-500">Raw label: {success.updatedMember.lockInLabel}</p>
+                      ) : null}
+                      {success.updatedMember.monthlyFeeLabel ? (
+                        <p className="mt-1 text-[10px] text-slate-500">Tier monthly rate label: {success.updatedMember.monthlyFeeLabel}</p>
+                      ) : null}
+                    </div>
+                    {Number(success.updatedMember.remainingBalance ?? 0) > 0 ||
+                    (success.updatedMember.monthsPaid ?? 0) > 0 ||
+                    (success.updatedMember.remainingMonths ?? 0) > 0 ? (
+                      <>
+                        <div className="col-span-2 rounded-lg border border-amber-200/80 bg-amber-50/90 px-2.5 py-2 ring-1 ring-amber-100">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/90">
+                            Legacy contract fields (old contract payments)
+                          </p>
+                          <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px] text-amber-950">
+                            <div>
+                              <span className="text-amber-800/90">Months paid</span>
+                              <p className="font-semibold tabular-nums">{success.updatedMember.monthsPaid}</p>
+                            </div>
+                            <div>
+                              <span className="text-amber-800/90">Remaining mo.</span>
+                              <p className="font-semibold tabular-nums">{success.updatedMember.remainingMonths ?? "—"}</p>
+                            </div>
+                            <div>
+                              <span className="text-amber-800/90">Balance</span>
+                              <p className="font-semibold tabular-nums">
+                                ₱{Number(success.updatedMember.remainingBalance ?? 0).toFixed(2)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    ) : null}
                     <div className="col-span-2 rounded-lg bg-emerald-600/10 px-2.5 py-2 ring-1 ring-emerald-200/60">
                       <dt className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/90">Loyalty points</dt>
                       <dd className="mt-0.5 text-base font-bold tabular-nums text-emerald-950">{success.updatedMember.loyaltyStars}</dd>
@@ -2013,15 +2631,25 @@ export default function PaymentsPage() {
                     type="button"
                     className="h-7 bg-[#1e3a5f] px-2 text-[11px] text-white hover:bg-[#1e3a5f]/90"
                     disabled={mergeReceiptIds.length < 2}
-                    onClick={() => openMergedReceiptFromSelection()}
+                    onClick={() => openMergedReceiptFromSelection("thermal")}
+                    title="Combined receipt on the standard 80mm POS size"
                   >
                     Merged receipt
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-7 border-[#1e3a5f] bg-white px-2 text-[11px] text-[#1e3a5f] hover:bg-[#1e3a5f]/10"
+                    disabled={mergeReceiptIds.length < 2}
+                    onClick={() => openMergedReceiptFromSelection("a4")}
+                    title="Combined receipt on a full A4 page"
+                  >
+                    A4
                   </Button>
                 </div>
               ) : (
                 <p className="text-[11px] text-slate-500">
-                  Tip: multi-line saves show as one card; use <span className="font-medium text-slate-700">Select group</span> to pick
-                  several cards for a custom merged receipt.
+                  Tip: tick rows in the table to combine them into a single merged receipt (same client only).
                 </p>
               )}
             </div>
@@ -2108,216 +2736,439 @@ export default function PaymentsPage() {
               </Button>
               <Button
                 type="button"
+                variant="outline"
+                className="h-8 border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-50"
+                disabled={exportingExcel || flatHistoryRows.length === 0}
+                onClick={handleExportExcel}
+                title="Export the current view (filters + sort) to an Excel .xlsx file"
+              >
+                {exportingExcel ? "Building Excel..." : "Export Excel"}
+              </Button>
+              <Button
+                type="button"
                 className="h-8 bg-[#1e3a5f] text-white hover:bg-[#1e3a5f]/90"
                 disabled={importingPayments}
                 onClick={() => paymentImportInputRef.current?.click()}
               >
                 {importingPayments ? "Importing..." : "Import"}
               </Button>
+              <p className="w-full text-[11px] leading-relaxed text-slate-500 sm:max-w-[30rem]">
+                Import tip: Membership rows default to <span className="font-medium text-slate-700">MONTHLY_FEE</span>.
+                Set <code className="rounded bg-slate-100 px-1">transactionType</code> to{" "}
+                <code className="rounded bg-slate-100 px-1">MEMBERSHIP_CONTRACT</code> only for true contract balances.
+              </p>
             </div>
           </div>
-          <div className="mb-3 space-y-1">
-            <label className="text-xs font-medium text-slate-600" htmlFor="payment-records-search">
-              Search payment records
-            </label>
-            <Input
-              id="payment-records-search"
-              type="search"
-              value={paymentRecordsSearch}
-              onChange={(e) => setPaymentRecordsSearch(e.target.value)}
-              placeholder="Name, service, method, amount, reference, notes, add-on…"
-              className="h-9 max-w-xl text-sm"
-              autoComplete="off"
-            />
-            <p className="text-[11px] text-slate-500">
-              Filters the lists below. Multi-line receipt cards stay together if any line matches.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-stretch 2xl:grid-cols-4">
-            {roleTabs.map((roleTab) => {
-              const allGroups = recordGroupsByRole[roleTab.id];
-              const groups = recordGroupsByRoleFiltered[roleTab.id];
-              const lineCount = groups.reduce((s, g) => s + g.rows.length, 0);
-              return (
-                <div
-                  key={roleTab.id}
-                  className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white"
+          <div className="mb-3 grid gap-3 sm:grid-cols-[minmax(0,_1fr)_auto] sm:items-end">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600" htmlFor="payment-records-search">
+                Search payment records
+              </label>
+              <Input
+                id="payment-records-search"
+                type="search"
+                value={paymentRecordsSearch}
+                onChange={(e) => setPaymentRecordsSearch(e.target.value)}
+                placeholder="Name, service, method, amount, reference, notes, add-on…"
+                className="h-9 max-w-xl text-sm"
+                autoComplete="off"
+              />
+              <p className="text-[11px] text-slate-500">
+                Search across the table. Combine with the role buttons and column sorting.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600" htmlFor="payment-records-date">
+                Filter by date
+              </label>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex h-9 w-9 items-center justify-center border-slate-300 bg-white p-0 text-slate-700 hover:bg-slate-50"
+                  onClick={() => stepHistoryDate(-1)}
+                  aria-label="Previous day"
+                  title="Previous day"
                 >
-                  <div className="shrink-0 border-b border-slate-100 bg-slate-50 px-3 py-2.5">
-                    <p className="text-xs font-semibold text-slate-700">{roleTab.label}</p>
-                    <p className="text-[11px] text-slate-500">
-                      {lineCount} line(s) · {groups.length} {groups.length === 1 ? "entry" : "entries"}
-                    </p>
-                  </div>
-                  <div className="min-h-[220px] max-h-[380px] flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain p-2 sm:min-h-[240px] sm:max-h-[min(420px,_50vh)]">
-                    <div className="space-y-2">
-                      {allGroups.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-6 text-center text-xs text-slate-500">
-                          No payment records yet.
-                        </div>
-                      ) : groups.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50/80 px-3 py-6 text-center text-xs text-amber-900">
-                          No records match your search in this column.
-                        </div>
-                      ) : (
-                        groups.map((group) => {
-                          const lineIds = group.rows.map((r) => r.id);
-                          const head = group.rows[0];
-                          const totalAmount = group.rows.reduce((s, r) => s + Number(r.amount), 0);
-                          const groupSelected =
-                            group.rows.length > 0 && group.rows.every((r) => mergeReceiptIds.includes(r.id));
-                          return (
-                            <div
-                              key={group.groupKey}
-                              className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs break-words"
-                            >
-                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                <label className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-700">
-                                  <input
-                                    type="checkbox"
-                                    className="h-3.5 w-3.5 shrink-0 rounded border-slate-400"
-                                    checked={groupSelected}
-                                    onChange={() => toggleMergeGroup(lineIds)}
-                                  />
-                                  <span className="font-medium text-slate-600">Select group</span>
-                                </label>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-6 border-slate-300 bg-white px-2 text-[10px] text-slate-700 hover:bg-slate-100"
-                                  onClick={() => openMergedReceipt(lineIds)}
-                                >
-                                  Receipt{group.rows.length > 1 ? " (combined)" : ""}
-                                </Button>
-                              </div>
-                              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
-                                <p className="font-semibold text-slate-800">
-                                  {head.user.firstName} {head.user.lastName}
-                                </p>
-                                {group.rows.length > 1 ? (
-                                  <p className="text-[10px] font-medium text-emerald-800">
-                                    {group.rows.length} items · Total ₱{totalAmount.toFixed(2)}
-                                  </p>
-                                ) : null}
-                              </div>
-                              <div className="mt-2 space-y-2 divide-y divide-slate-200">
-                                {group.rows.map((row) => {
-                                  const track = paymentTrackLabel(row);
-                                  return (
-                                    <div key={row.id} className="min-w-0 pt-2 first:pt-0">
-                                      <div className="flex flex-wrap items-center gap-1">
-                                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-700">
-                                          {row.paymentMethod}
-                                        </span>
-                                        {row.user.role === "MEMBER" && row.service.name === "Membership" ? (
-                                          <span
-                                            className={`rounded px-1.5 py-0.5 text-[10px] ${
-                                              row.collectionStatus === "PARTIAL"
-                                                ? "bg-amber-100 text-amber-800"
-                                                : "bg-emerald-100 text-emerald-800"
-                                            }`}
-                                          >
-                                            {row.collectionStatus === "PARTIAL" ? "Partial" : "Fully Paid"}
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                      <p className="mt-1 text-slate-600">
-                                        {row.service.name} - {row.service.tier}
-                                      </p>
-                                      {track ? <p className="mt-0.5 text-[10px] font-medium text-slate-500">{track}</p> : null}
-                                      <div className="mt-1 flex flex-col gap-0.5 text-slate-700 sm:flex-row sm:items-center sm:justify-between">
-                                        <span>Paid: {Number(row.amount).toFixed(2)}</span>
-                                        <span>{new Date(row.paidAt).toLocaleString()}</span>
-                                      </div>
-                                      {Number(row.discountAmount ?? 0) > 0 ? (
-                                        <p className="mt-1 text-[10px] text-slate-500">
-                                          Gross {Number(row.grossAmount ?? row.amount).toFixed(2)} −{" "}
-                                          {row.discountType === "FIXED"
-                                            ? `₱${Number(row.discountAmount).toFixed(2)} fixed`
-                                            : `${Number(row.discountPercent ?? 0)}% (₱${Number(row.discountAmount).toFixed(2)})`}
-                                          {row.discountReason ? ` · ${row.discountReason}` : ""}
-                                        </p>
-                                      ) : null}
-                                      {row.paymentMethod === "SPLIT" && row.splitPayments?.length ? (
-                                        <p className="mt-1 font-mono text-[10px] text-slate-500">
-                                          {row.splitPayments
-                                            .map((sp) => `${sp.method}${sp.reference ? ` · ${sp.reference}` : ""}`)
-                                            .join(" · ")}
-                                        </p>
-                                      ) : row.paymentReference ? (
-                                        <p className="mt-1 font-mono text-[10px] text-slate-500">Ref: {row.paymentReference}</p>
-                                      ) : null}
-                                      <div className="mt-2 flex flex-wrap gap-1.5">
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          className="h-6 border-slate-300 bg-white px-2 text-[10px] text-slate-700 hover:bg-slate-100"
-                                          disabled={updatingTransactionId === row.id}
-                                          onClick={() => {
-                                            setEditingTransaction({
-                                              id: row.id,
-                                              grossAmount: Number(row.grossAmount ?? row.amount).toFixed(2),
-                                              discountType:
-                                                row.discountType === "FIXED" ||
-                                                row.discountType === "PERCENT" ||
-                                                row.discountType === "NONE"
-                                                  ? row.discountType
-                                                  : Number(row.discountAmount ?? 0) > 0 && Number(row.discountPercent ?? 0) === 0
-                                                    ? "FIXED"
-                                                    : Number(row.discountPercent ?? 0) > 0
-                                                      ? "PERCENT"
-                                                      : "NONE",
-                                              discountPercent: String(row.discountPercent ?? 0),
-                                              discountFixedAmount: Number(
-                                                row.discountFixedAmount ?? row.discountAmount ?? 0,
-                                              ).toFixed(2),
-                                              discountReason: row.discountReason ?? "",
-                                              paymentMethod: row.paymentMethod,
-                                              collectionStatus: row.collectionStatus,
-                                              paidAtLocal: toDateTimeLocalValue(row.paidAt),
-                                              paymentReference: row.paymentReference ?? "",
-                                              notes: row.notes ?? "",
-                                              isSplit: row.paymentMethod === "SPLIT",
-                                            });
-                                          }}
-                                        >
-                                          Edit
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          className="h-6 border-amber-300 bg-white px-2 text-[10px] text-amber-700 hover:bg-amber-50"
-                                          disabled={updatingTransactionId === row.id}
-                                          onClick={() => {
-                                            setVoidReasonInput("Admin correction");
-                                            setPendingVoidPayment(row);
-                                          }}
-                                        >
-                                          Void
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          className="h-6 border-red-300 bg-white px-2 text-[10px] text-red-700 hover:bg-red-50"
-                                          disabled={updatingTransactionId === row.id}
-                                          onClick={() => setPendingDeletePayment(row)}
-                                        >
-                                          Delete
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </div>
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                </Button>
+                <Input
+                  id="payment-records-date"
+                  type="date"
+                  value={paymentRecordsDate}
+                  max={todayPHStr}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v && v > todayPHStr) {
+                      setPaymentRecordsDate(todayPHStr);
+                      return;
+                    }
+                    setPaymentRecordsDate(v);
+                  }}
+                  className="h-9 w-44 text-sm"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex h-9 w-9 items-center justify-center border-slate-300 bg-white p-0 text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => stepHistoryDate(1)}
+                  disabled={!canStepForward}
+                  aria-label="Next day"
+                  title={canStepForward ? "Next day" : "Future dates are locked"}
+                >
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 border-slate-300 bg-white text-xs text-slate-700 hover:bg-slate-50"
+                  disabled={paymentRecordsDate === todayPHStr}
+                  onClick={() => setPaymentRecordsDate(todayPHStr)}
+                  title="Jump to today (PH)"
+                >
+                  Today
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 border-slate-300 bg-white text-xs text-slate-700 hover:bg-slate-50"
+                  disabled={!paymentRecordsDate}
+                  onClick={() => setPaymentRecordsDate("")}
+                  title="Clear date filter (show 200 most recent)"
+                >
+                  Clear
+                </Button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                {paymentRecordsDate
+                  ? `Showing transactions recorded on ${paymentRecordsDate} (PH calendar day, Asia/Manila). Future dates are locked.`
+                  : "Default: 200 most recent payments (by record time). Pick a date to load up to 500 payments recorded that day in PH."}
+              </p>
+            </div>
+          </div>
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            {historyRoleFilters.map((tab) => {
+              const active = paymentRecordsRoleFilter === tab.id;
+              const count = historyRoleCounts[tab.id];
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setPaymentRecordsRoleFilter(tab.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                    active
+                      ? "border-[#1e3a5f] bg-[#1e3a5f] text-white shadow-sm"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+                  }`}
+                  aria-pressed={active}
+                >
+                  <span>{tab.label}</span>
+                  <span
+                    className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${
+                      active ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
               );
             })}
+            <span className="ml-auto text-[11px] text-slate-500">
+              {flatHistoryRows.length === 0
+                ? "No matching transactions."
+                : `${flatHistoryRows.length} ${flatHistoryRows.length === 1 ? "transaction" : "transactions"} · Net ₱${historyTotalsForView.net.toFixed(2)}${
+                    historyTotalsForView.discount > 0
+                      ? ` (Gross ₱${historyTotalsForView.gross.toFixed(2)} − Disc ₱${historyTotalsForView.discount.toFixed(2)})`
+                      : ""
+                  }`}
+            </span>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-slate-200 pb-3">
+              <span className="w-full text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:mr-1 sm:w-auto">
+                Sort
+              </span>
+              <HistorySortHeader
+                variant="pill"
+                label="ID"
+                column="paidAt"
+                sortable={false}
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+              />
+              <HistorySortHeader
+                variant="pill"
+                label="Paid"
+                column="paidAt"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+              />
+              <HistorySortHeader
+                variant="pill"
+                label="Recorded"
+                column="createdAt"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+              />
+              <HistorySortHeader
+                variant="pill"
+                label="Customer"
+                column="customer"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+              />
+              <HistorySortHeader variant="pill" label="Role" column="role" sort={paymentRecordsSort} onToggle={toggleHistorySort} />
+              <HistorySortHeader variant="pill" label="Item" column="service" sort={paymentRecordsSort} onToggle={toggleHistorySort} />
+              <HistorySortHeader variant="pill" label="Method" column="method" sort={paymentRecordsSort} onToggle={toggleHistorySort} />
+              <HistorySortHeader
+                variant="pill"
+                label="Disc."
+                column="discount"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+                align="right"
+              />
+              <HistorySortHeader
+                variant="pill"
+                label="Gross"
+                column="gross"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+                align="right"
+              />
+              <HistorySortHeader
+                variant="pill"
+                label="Total"
+                column="total"
+                sort={paymentRecordsSort}
+                onToggle={toggleHistorySort}
+                align="right"
+              />
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase text-slate-500">
+                Reference / OR
+              </span>
+            </div>
+            {records.length === 0 ? (
+              <div className="w-full rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-slate-500">
+                No payment records yet.
+              </div>
+            ) : flatHistoryRows.length === 0 ? (
+              <div className="w-full rounded-lg border border-dashed border-amber-200 bg-amber-50/50 px-3 py-8 text-center text-xs text-amber-900">
+                No records match your search and filter.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {flatHistoryRows.map((row) => {
+                  const track = paymentTrackLabel(row);
+                  const gross = Number(row.grossAmount ?? row.amount) || 0;
+                  const total = Number(row.amount) || 0;
+                  const discountAmount = Number(row.discountAmount ?? 0) || 0;
+                  const discountPercent = Number(row.discountPercent ?? 0) || 0;
+                  const isPartial = row.collectionStatus === "PARTIAL";
+                  const selected = mergeReceiptIds.includes(row.id);
+                  const rolePill = historyRolePill(row.user.role, row.user.membershipTier);
+                  const showSubRole =
+                    row.user.role === "MEMBER" &&
+                    rolePill.label !== "Member" &&
+                    rolePill.label !== historyRoleShortLabel(row.user.role);
+                  const referenceText = (() => {
+                    if (row.paymentMethod === "SPLIT" && row.splitPayments?.length) {
+                      return row.splitPayments
+                        .map((sp) => `${sp.method}${sp.reference ? ` · ${sp.reference}` : ""}`)
+                        .join(" · ");
+                    }
+                    const ref = (row.paymentReference ?? "").trim();
+                    const or = (row.orNumber ?? "").trim();
+                    if (ref && or) return `${ref} · OR ${or}`;
+                    return ref || (or ? `OR ${or}` : "");
+                  })();
+                  return (
+                    <div
+                      key={row.id}
+                      className={`w-full rounded-lg border border-slate-200 p-3 shadow-sm transition hover:border-slate-300 ${
+                        selected ? "border-[#1e3a5f]/50 bg-[#1e3a5f]/5" : "bg-white"
+                      }`}
+                    >
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
+                          <div className="flex shrink-0 items-center gap-2">
+                            <input
+                              type="checkbox"
+                              className="h-3.5 w-3.5 rounded border-slate-400"
+                              checked={selected}
+                              onChange={() => toggleMergeGroup([row.id])}
+                              aria-label="Select for merged receipt"
+                            />
+                            <span className="font-mono text-[11px] text-slate-500" title={row.id}>
+                              #{historyShortId(row.id)}
+                            </span>
+                          </div>
+                          <div className="grid min-w-0 flex-1 grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Paid</div>
+                              <div className="whitespace-nowrap text-slate-800 tabular-nums">{new Date(row.paidAt).toLocaleDateString()}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Recorded</div>
+                              <div className="text-[11px] text-slate-600">{row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}</div>
+                            </div>
+                            <div className="min-w-0 sm:col-span-2">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customer</div>
+                              <div className="font-medium text-slate-900">
+                                {row.user.firstName} {row.user.lastName}
+                              </div>
+                              {row.user.remainingBalance && Number(row.user.remainingBalance) > 0 ? (
+                                <div className="mt-0.5 text-[10px] text-amber-700">Balance: ₱{Number(row.user.remainingBalance).toFixed(2)}</div>
+                              ) : null}
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</div>
+                              <span className={`mt-0.5 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${rolePill.classes}`}>
+                                {rolePill.label}
+                              </span>
+                              {showSubRole ? <div className="mt-0.5 text-[10px] text-slate-500">Member</div> : null}
+                            </div>
+                            <div className="min-w-0 sm:col-span-2 lg:col-span-2">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Item</div>
+                              <div className="font-medium text-slate-900">{row.service.name}</div>
+                              <div className="text-[11px] text-slate-500">{row.service.tier}</div>
+                              {track ? <div className="mt-0.5 text-[10px] font-medium text-slate-500">{track}</div> : null}
+                              {row.customAddOnLabel ? <div className="mt-0.5 text-[10px] text-slate-500">{row.customAddOnLabel}</div> : null}
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Method</div>
+                              <span className="inline-flex items-center rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                                {paymentMethodOptionLabel(row.paymentMethod)}
+                              </span>
+                              {row.user.role === "MEMBER" && row.service.name === "Membership" ? (
+                                <div
+                                  className={`mt-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                    isPartial ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
+                                  }`}
+                                >
+                                  {isPartial ? "Partial" : "Fully paid"}
+                                </div>
+                              ) : null}
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Discount</div>
+                              {discountAmount > 0 ? (
+                                <div>
+                                  <div className="font-semibold text-slate-800 tabular-nums">−₱{discountAmount.toFixed(2)}</div>
+                                  <div className="text-[10px] text-slate-500">
+                                    {row.discountType === "FIXED" ? "Fixed" : `${discountPercent}%`}
+                                  </div>
+                                  {row.discountReason ? (
+                                    <div className="line-clamp-2 text-[10px] text-slate-400" title={row.discountReason}>
+                                      {row.discountReason}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gross</div>
+                              <div className="tabular-nums text-slate-800">₱{gross.toFixed(2)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Total</div>
+                              <div className="font-semibold tabular-nums text-slate-900">₱{total.toFixed(2)}</div>
+                            </div>
+                            <div className="min-w-0 sm:col-span-2 lg:col-span-2">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reference</div>
+                              {referenceText ? (
+                                <div className="break-all font-mono text-[10px] text-slate-600" title={referenceText}>
+                                  {referenceText}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-slate-400">—</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 border-t border-slate-100 pt-2 lg:border-0 lg:pt-0">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 border-slate-300 bg-white px-2 text-[10px] text-slate-700 hover:bg-slate-100"
+                            onClick={() => openReceipt(row.id, "thermal")}
+                            title="Print on the standard 80mm POS receipt size"
+                          >
+                            Receipt
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 border-[#1e3a5f] bg-white px-2 text-[10px] text-[#1e3a5f] hover:bg-[#1e3a5f]/10"
+                            onClick={() => openReceipt(row.id, "a4")}
+                            title="Print on a full A4 page"
+                          >
+                            A4
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 border-slate-300 bg-white px-2 text-[10px] text-slate-700 hover:bg-slate-100"
+                            disabled={updatingTransactionId === row.id}
+                            onClick={() => {
+                              setEditingTransaction({
+                                id: row.id,
+                                grossAmount: Number(row.grossAmount ?? row.amount).toFixed(2),
+                                discountType:
+                                  row.discountType === "FIXED" ||
+                                  row.discountType === "PERCENT" ||
+                                  row.discountType === "NONE"
+                                    ? row.discountType
+                                    : Number(row.discountAmount ?? 0) > 0 && Number(row.discountPercent ?? 0) === 0
+                                      ? "FIXED"
+                                      : Number(row.discountPercent ?? 0) > 0
+                                        ? "PERCENT"
+                                        : "NONE",
+                                discountPercent: String(row.discountPercent ?? 0),
+                                discountFixedAmount: Number(row.discountFixedAmount ?? row.discountAmount ?? 0).toFixed(2),
+                                discountReason: row.discountReason ?? "",
+                                paymentMethod: row.paymentMethod,
+                                collectionStatus: row.collectionStatus,
+                                paidAtLocal: toDateTimeLocalValue(row.paidAt),
+                                paymentReference: row.paymentReference ?? "",
+                                orNumber: row.orNumber ?? "",
+                                notes: row.notes ?? "",
+                                isSplit: row.paymentMethod === "SPLIT",
+                              });
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 border-amber-300 bg-white px-2 text-[10px] text-amber-700 hover:bg-amber-50"
+                            disabled={updatingTransactionId === row.id}
+                            onClick={() => {
+                              setVoidReasonInput("Admin correction");
+                              setPendingVoidPayment(row);
+                            }}
+                          >
+                            Void
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 border-red-300 bg-white px-2 text-[10px] text-red-700 hover:bg-red-50"
+                            disabled={updatingTransactionId === row.id}
+                            onClick={() => setPendingDeletePayment(row)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
         </div>
@@ -2446,7 +3297,7 @@ export default function PaymentsPage() {
                 >
                   {methodOptions.map((method) => (
                     <option key={method} value={method}>
-                      {method}
+                      {paymentMethodOptionLabel(method)}
                     </option>
                   ))}
                 </select>
@@ -2463,8 +3314,8 @@ export default function PaymentsPage() {
                     })
                   }
                 >
-                  <option value="FULLY_PAID">FULLY_PAID</option>
-                  <option value="PARTIAL">PARTIAL</option>
+              <option value="FULLY_PAID">Fully Paid</option>
+              <option value="PARTIAL">Partial</option>
                 </select>
               </div>
               <div className="space-y-1.5">
@@ -2480,6 +3331,13 @@ export default function PaymentsPage() {
                 <Input
                   value={editingTransaction.paymentReference}
                   onChange={(e) => setEditingTransaction({ ...editingTransaction, paymentReference: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <label className="text-xs font-medium text-slate-600">OR number</label>
+                <Input
+                  value={editingTransaction.orNumber}
+                  onChange={(e) => setEditingTransaction({ ...editingTransaction, orNumber: e.target.value })}
                 />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
@@ -2554,6 +3412,7 @@ export default function PaymentsPage() {
                       collectionStatus: editingTransaction.collectionStatus,
                       paidAt: paidAtIso,
                       paymentReference: editingTransaction.paymentReference,
+                      orNumber: editingTransaction.orNumber,
                       notes: editingTransaction.notes,
                     }),
                   });

@@ -13,6 +13,25 @@ import { formatRoleLabel } from "@/lib/role-labels";
 type CreatedUser = { firstName: string; lastName: string; role: UserRole; qrCodeImage: string };
 type TierPreset = { lockInLabel: string; monthlyFeeLabel: string; membershipFeeLabel: string };
 type CoachRow = { id: string; name: string };
+type AccessCodeRow = {
+  id: string;
+  code: string;
+  maxUses: number;
+  usedCount: number;
+  isActive: boolean;
+  expiresAt?: string | null;
+  createdAt: string;
+};
+type RegistrationRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: UserRole;
+  status: "REGISTERED" | "APPROVED" | "DECLINED";
+  profileImageUrl: string;
+  createdAt: string;
+};
 
 const tierPresets: Record<string, TierPreset> = {
   Bronze: { lockInLabel: "No Lock-in", monthlyFeeLabel: "₱1,200.00", membershipFeeLabel: "₱0.00" },
@@ -45,6 +64,13 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [created, setCreated] = useState<CreatedUser | null>(null);
+  const [accessCodes, setAccessCodes] = useState<AccessCodeRow[]>([]);
+  const [pendingRegistrations, setPendingRegistrations] = useState<RegistrationRow[]>([]);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [registrationNotice, setRegistrationNotice] = useState("");
+  const [codeDurationDays, setCodeDurationDays] = useState(7);
+  const [codeMaxUses, setCodeMaxUses] = useState(5);
 
   useEffect(() => {
     const loadCoaches = async () => {
@@ -53,6 +79,25 @@ export default function RegisterPage() {
       if (json.success) setCoaches(json.data ?? []);
     };
     loadCoaches();
+  }, []);
+
+  const loadRegistrationData = async () => {
+    try {
+      const [codesRes, pendingRes] = await Promise.all([
+        fetch("/api/client/registrations/access-code"),
+        fetch("/api/client/registrations?status=REGISTERED&take=50"),
+      ]);
+      const codesJson = (await codesRes.json()) as { success?: boolean; data?: AccessCodeRow[] };
+      const pendingJson = (await pendingRes.json()) as { success?: boolean; data?: RegistrationRow[] };
+      setAccessCodes(codesJson.success ? (codesJson.data ?? []) : []);
+      setPendingRegistrations(pendingJson.success ? (pendingJson.data ?? []) : []);
+    } catch {
+      setRegistrationNotice("Unable to load walk-in registration data.");
+    }
+  };
+
+  useEffect(() => {
+    void loadRegistrationData();
   }, []);
 
   const submit = async (event: React.FormEvent) => {
@@ -107,7 +152,8 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="grid lg:grid-cols-2 gap-4 fade-in-up">
+    <div className="space-y-4 fade-in-up">
+      <div className="grid lg:grid-cols-2 gap-4">
       <Card className="p-5 surface-card surface-card-interactive">
         <h2 className="font-semibold text-lg mb-4 text-slate-800">Register User</h2>
         <form onSubmit={submit} className="space-y-4">
@@ -251,6 +297,265 @@ export default function RegisterPage() {
         ) : (
           <p className="text-slate-500">No QR generated yet.</p>
         )}
+      </Card>
+      </div>
+
+      <Card className="p-5 surface-card surface-card-interactive space-y-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-800">Walk-in Access Code</h3>
+            <p className="text-sm text-slate-500">Generate codes for client self-registration.</p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="code-max-uses">Max uses</Label>
+              <Input
+                id="code-max-uses"
+                type="number"
+                min={1}
+                className="w-24"
+                value={codeMaxUses}
+                onChange={(e) => setCodeMaxUses(Math.max(1, Math.trunc(Number(e.target.value || 1))))}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="code-duration">Duration (days)</Label>
+              <Input
+                id="code-duration"
+                type="number"
+                min={1}
+                className="w-28"
+                value={codeDurationDays}
+                onChange={(e) => setCodeDurationDays(Math.max(1, Math.trunc(Number(e.target.value || 1))))}
+              />
+            </div>
+          <Button
+            type="button"
+            disabled={generatingCode}
+            onClick={async () => {
+              setGeneratingCode(true);
+              setRegistrationNotice("");
+              try {
+                const res = await fetch("/api/client/registrations/access-code", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ maxUses: codeMaxUses, expiresInDays: codeDurationDays }),
+                });
+                const json = (await res.json()) as { success?: boolean; error?: string; data?: AccessCodeRow };
+                if (!json.success || !json.data) {
+                  setRegistrationNotice(json.error ?? "Unable to generate access code.");
+                } else {
+                  setAccessCodes((prev) => [json.data as AccessCodeRow, ...prev].slice(0, 30));
+                  setRegistrationNotice(`New code generated: ${json.data.code}`);
+                }
+              } catch {
+                setRegistrationNotice("Unable to generate access code.");
+              } finally {
+                setGeneratingCode(false);
+              }
+            }}
+          >
+            {generatingCode ? "Generating..." : "Generate Code"}
+          </Button>
+          </div>
+        </div>
+
+        {registrationNotice ? <p className="text-sm text-[#1e3a5f]">{registrationNotice}</p> : null}
+
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-100 text-slate-700">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">Code</th>
+                <th className="px-3 py-2 text-left font-semibold">Status</th>
+                <th className="px-3 py-2 text-left font-semibold">Usage</th>
+                <th className="px-3 py-2 text-left font-semibold">Expires</th>
+                <th className="px-3 py-2 text-left font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {accessCodes.length === 0 ? (
+                <tr>
+                  <td className="px-3 py-3 text-slate-500" colSpan={5}>No access codes yet.</td>
+                </tr>
+              ) : (
+                accessCodes.map((code) => (
+                  <tr key={code.id}>
+                    <td className="px-3 py-2 font-mono">{code.code}</td>
+                    <td className="px-3 py-2">{code.isActive ? "Active" : "Inactive"}</td>
+                    <td className="px-3 py-2">{code.usedCount}/{code.maxUses}</td>
+                    <td className="px-3 py-2">{code.expiresAt ? format(new Date(code.expiresAt), "MMM d, yyyy") : "No expiry"}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            const nextMaxUsesRaw = window.prompt("Set max uses:", String(code.maxUses));
+                            if (!nextMaxUsesRaw) return;
+                            const nextMaxUses = Math.max(1, Math.trunc(Number(nextMaxUsesRaw)));
+                            if (!Number.isFinite(nextMaxUses)) return;
+                            const res = await fetch(`/api/client/registrations/access-code/${code.id}`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ maxUses: nextMaxUses }),
+                            });
+                            const json = (await res.json()) as { success?: boolean; error?: string };
+                            if (!json.success) setRegistrationNotice(json.error ?? "Failed to update max uses.");
+                            else {
+                              setRegistrationNotice(`Updated max uses for ${code.code}.`);
+                              await loadRegistrationData();
+                            }
+                          }}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            const res = await fetch(`/api/client/registrations/access-code/${code.id}`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ isActive: !code.isActive }),
+                            });
+                            const json = (await res.json()) as { success?: boolean; error?: string };
+                            if (!json.success) setRegistrationNotice(json.error ?? "Failed to toggle code.");
+                            else {
+                              setRegistrationNotice(`${code.code} ${code.isActive ? "deactivated" : "activated"}.`);
+                              await loadRegistrationData();
+                            }
+                          }}
+                        >
+                          {code.isActive ? "Deactivate" : "Activate"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete code ${code.code}?`)) return;
+                            const res = await fetch(`/api/client/registrations/access-code/${code.id}`, { method: "DELETE" });
+                            const json = (await res.json()) as { success?: boolean; error?: string };
+                            if (!json.success) setRegistrationNotice(json.error ?? "Failed to delete code.");
+                            else {
+                              setRegistrationNotice(`${code.code} deleted.`);
+                              await loadRegistrationData();
+                            }
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card className="p-5 surface-card surface-card-interactive space-y-4">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-800">Newly Registered Walk-ins</h3>
+          <p className="text-sm text-slate-500">Approve or decline pending registrations from access-code signups.</p>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-100 text-slate-700">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">Name</th>
+                <th className="px-3 py-2 text-left font-semibold">Email</th>
+                <th className="px-3 py-2 text-left font-semibold">Role</th>
+                <th className="px-3 py-2 text-left font-semibold">Photo</th>
+                <th className="px-3 py-2 text-left font-semibold">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {pendingRegistrations.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-3 py-3 text-slate-500">No pending registrations.</td>
+                </tr>
+              ) : (
+                pendingRegistrations.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-3 py-2">{row.firstName} {row.lastName}</td>
+                    <td className="px-3 py-2">{row.email}</td>
+                    <td className="px-3 py-2">{formatRoleLabel(row.role)}</td>
+                    <td className="px-3 py-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={row.profileImageUrl} alt="" className="h-10 w-10 rounded object-cover border border-slate-200" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={reviewingId === row.id}
+                          onClick={async () => {
+                            setReviewingId(row.id);
+                            try {
+                              const res = await fetch(`/api/client/registrations/${row.id}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ decision: "APPROVE" }),
+                              });
+                              const json = (await res.json()) as { success?: boolean; error?: string };
+                              if (!json.success) {
+                                setRegistrationNotice(json.error ?? "Approval failed.");
+                              } else {
+                                setPendingRegistrations((prev) => prev.filter((item) => item.id !== row.id));
+                                setRegistrationNotice(`${row.firstName} ${row.lastName} approved and added to users.`);
+                              }
+                            } catch {
+                              setRegistrationNotice("Approval failed.");
+                            } finally {
+                              setReviewingId(null);
+                            }
+                          }}
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={reviewingId === row.id}
+                          onClick={async () => {
+                            setReviewingId(row.id);
+                            try {
+                              const res = await fetch(`/api/client/registrations/${row.id}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ decision: "DECLINE" }),
+                              });
+                              const json = (await res.json()) as { success?: boolean; error?: string };
+                              if (!json.success) {
+                                setRegistrationNotice(json.error ?? "Decline failed.");
+                              } else {
+                                setPendingRegistrations((prev) => prev.filter((item) => item.id !== row.id));
+                                setRegistrationNotice(`${row.firstName} ${row.lastName} declined.`);
+                              }
+                            } catch {
+                              setRegistrationNotice("Decline failed.");
+                            } finally {
+                              setReviewingId(null);
+                            }
+                          }}
+                        >
+                          Decline
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   );
