@@ -776,7 +776,7 @@ export default function PaymentsPage() {
       setSplits([{ method: "CASH", amount: "", reference: "" }]);
     }
   }, [cartLines.length, enableSplit]);
-  const getComputedAmount = (service: ServiceRow | null, role: RoleFilter, member: MemberRow | null) => {
+  const getComputedAmount = (service: ServiceRow | null, role: RoleFilter) => {
     if (!service) return "";
     const baseAmount = Number(service.monthlyRate);
     if (!Number.isFinite(baseAmount) || baseAmount <= 0) return "";
@@ -1117,7 +1117,7 @@ export default function PaymentsPage() {
     if (shouldAutoFillFromBalance(service)) {
       return selectedMemberBalance;
     }
-    const def = getComputedAmount(service, clientRole, selectedMember) || String(Number(service.monthlyRate) || 0);
+    const def = getComputedAmount(service, clientRole) || String(Number(service.monthlyRate) || 0);
     const n = Number(def);
     return Number.isFinite(n) && n > 0 ? n : Number(service.monthlyRate) || 0;
   };
