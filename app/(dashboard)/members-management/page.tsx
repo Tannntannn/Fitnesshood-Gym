@@ -15,6 +15,10 @@ type ManagedMember = {
   contactNo: string;
   membershipStart: string | null;
   membershipExpiry: string | null;
+  membershipTierStart?: string | null;
+  membershipTierExpiry?: string | null;
+  membershipJoinedStart?: string | null;
+  membershipJoinedExpiry?: string | null;
   fullMembershipExpiry?: string | null;
   createdAt?: string | null;
   membershipTier: string | null;
@@ -41,12 +45,20 @@ type ManagedMember = {
   membershipStatus: "ACTIVE" | "EXPIRING_SOON" | "EXPIRED" | "NO_EXPIRY";
   /** Latest attendance scan (any role snapshot) for inactivity rules. */
   lastAttendanceAt?: string | null;
+  addOnSubscriptions?: Array<{
+    id: string;
+    addonName: string;
+    dueDate?: string | null;
+    status?: string | null;
+    notes?: string | null;
+  }>;
 };
 
 /** Synthetic tab: all members with penalty (any tier). */
 const PENALTY_TAB = "__penalty__";
 /** Expired members with no visit or last visit 30+ days ago (any tier). */
 const NOT_ACTIVE_TAB = "__not_active__";
+const FROZEN_TAB = "__frozen__";
 /** All members in one spreadsheet (any tier). */
 const OVERALL_TAB = "__overall__";
 
@@ -174,6 +186,70 @@ function formatDateSafe(iso: string | null | undefined, pattern: string, empty: 
   return format(d, pattern);
 }
 
+/** Matches the add-on name "Locker" only (case-insensitive). */
+function isLockerAddonName(name: string | null | undefined): boolean {
+  return (name ?? "").trim().toLowerCase() === "locker";
+}
+
+/** Remove lines that store locker assignment (same convention as payments: `Locker #: …`). */
+function stripLockerNoteLines(text: string | null | undefined): string {
+  if (!text?.trim()) return "";
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*Locker\s*#\s*:?\s*/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+function parseLockerNumberFromNotes(text: string | null | undefined): string {
+  if (!text) return "";
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*Locker\s*#\s*:\s*(.*)$/i);
+    if (m) return m[1].trim();
+  }
+  return "";
+}
+
+function mergeLockerIntoNotes(otherNotes: string, lockerNumber: string): string | null {
+  const rest = otherNotes.trim();
+  const lock = lockerNumber.trim();
+  const parts: string[] = [];
+  if (rest) parts.push(rest);
+  if (lock) parts.push(`Locker #: ${lock}`);
+  if (!parts.length) return null;
+  return parts.join("\n");
+}
+
+/** Value for the roster “Locker” column: first `Locker #:` found on member add-ons (ACTIVE and name↔locker preferred). */
+function memberLockerNumberLabel(member: ManagedMember): string {
+  const subs = member.addOnSubscriptions ?? [];
+  if (subs.length === 0) return "";
+  const statusRank = (s: string | null | undefined) => ((s ?? "").toUpperCase() === "ACTIVE" ? 0 : 1);
+  const nameRank = (name: string) => {
+    const n = name.trim().toLowerCase();
+    if (n === "locker") return 0;
+    if (n.includes("locker")) return 1;
+    return 2;
+  };
+  const sorted = subs.slice().sort((a, b) => {
+    const ds = statusRank(a.status) - statusRank(b.status);
+    if (ds !== 0) return ds;
+    return nameRank(a.addonName) - nameRank(b.addonName);
+  });
+  for (const sub of sorted) {
+    const num = parseLockerNumberFromNotes(sub.notes);
+    if (num) return num;
+  }
+  return "";
+}
+
+/** Matches members-management API: monthly due drives roster expiry when set (not full lock-in horizon). */
+function rosterAccessExpiryIso(member: ManagedMember): string | null {
+  const m = member.monthlyExpiryDate?.trim();
+  if (m) return m;
+  return member.membershipExpiry ?? null;
+}
+
 const EDIT_MODAL_TIER_VALUES = new Set([
   "Bronze",
   "Silver",
@@ -230,9 +306,12 @@ function mmSortCompare(a: ManagedMember, b: ManagedMember, key: MmSortKey, dir: 
     case "start":
       cmp = (a.membershipStart ? new Date(a.membershipStart).getTime() : 0) - (b.membershipStart ? new Date(b.membershipStart).getTime() : 0);
       break;
-    case "expiry":
-      cmp = (a.membershipExpiry ? new Date(a.membershipExpiry).getTime() : 0) - (b.membershipExpiry ? new Date(b.membershipExpiry).getTime() : 0);
+    case "expiry": {
+      const ae = rosterAccessExpiryIso(a);
+      const be = rosterAccessExpiryIso(b);
+      cmp = (ae ? new Date(ae).getTime() : 0) - (be ? new Date(be).getTime() : 0);
       break;
+    }
     case "join":
       cmp = (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       break;
@@ -368,6 +447,7 @@ function memberForEdit(member: ManagedMember): ManagedMember {
 }
 const TIER_ACCENT: Record<string, string> = {
   [NOT_ACTIVE_TAB]: "from-slate-100 to-zinc-100 border-slate-300",
+  [FROZEN_TAB]: "from-cyan-50 to-sky-100 border-cyan-200",
   [OVERALL_TAB]: "from-slate-100 to-slate-200 border-slate-300",
   Bronze: "from-amber-50 to-amber-100 border-amber-200",
   Silver: "from-slate-100 to-slate-200 border-slate-300",
@@ -414,6 +494,10 @@ const TIER_TAB_STYLE: Record<string, { active: string; inactive: string }> = {
     active: "border-slate-700 bg-slate-700 text-white",
     inactive: "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200",
   },
+  [FROZEN_TAB]: {
+    active: "border-cyan-700 bg-cyan-700 text-white",
+    inactive: "border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100",
+  },
   [OVERALL_TAB]: {
     active: "border-[#1e3a5f] bg-[#1e3a5f] text-white",
     inactive: "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
@@ -428,6 +512,7 @@ export default function MembersManagementPage() {
   const [searchName, setSearchName] = useState("");
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [mmSort, setMmSort] = useState<{ key: MmSortKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" });
+  const [savingAddonId, setSavingAddonId] = useState<string | null>(null);
   const toggleMmSort = useCallback((key: MmSortKey) => {
     setMmSort((prev) =>
       prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
@@ -664,7 +749,10 @@ export default function MembersManagementPage() {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-slate-700">
-                      {member.membershipExpiry ? format(new Date(member.membershipExpiry), "MMM d, yyyy") : "N/A"}
+                      {(() => {
+                        const exp = rosterAccessExpiryIso(member);
+                        return exp ? format(new Date(exp), "MMM d, yyyy") : "N/A";
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-slate-700">
                       {(() => {
@@ -894,6 +982,7 @@ export default function MembersManagementPage() {
                               member.tierLockInPaidMonths ?? lockInPaidMonths(lockInLeft, lockInTemplate);
                             const tierKey = member.tier;
                             const rowBg = idx % 2 === 0 ? "bg-white" : "bg-slate-50";
+                            const lockerNo = memberLockerNumberLabel(member);
                             return (
                               <tr
                                 key={member.id}
@@ -911,7 +1000,16 @@ export default function MembersManagementPage() {
                                   ) : null}
                                 </td>
                                 <td className="px-2.5 py-2 align-middle tabular-nums text-slate-700">{member.contactNo?.trim() || "—"}</td>
-                                <td className="px-2.5 py-2 align-middle text-slate-500">—</td>
+                                <td
+                                  className="max-w-[120px] px-2.5 py-2 align-middle text-slate-700"
+                                  title={lockerNo || undefined}
+                                >
+                                  {lockerNo ? (
+                                    <span className="block truncate font-medium tabular-nums text-slate-900">{lockerNo}</span>
+                                  ) : (
+                                    <span className="text-slate-500">—</span>
+                                  )}
+                                </td>
                                 <td className="px-2.5 py-2 align-middle">
                                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusPillClass(outward)}`}>
                                     {outward}
@@ -957,7 +1055,12 @@ export default function MembersManagementPage() {
                                   </span>
                                 </td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.membershipStart)}</td>
-                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.membershipExpiry)}</td>
+                                <td
+                                  className="px-2.5 py-2 align-middle text-slate-700"
+                                  title={member.monthlyExpiryDate ? "Monthly / access window (matches Days left)" : undefined}
+                                >
+                                  {formatLongDate(rosterAccessExpiryIso(member))}
+                                </td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.createdAt)}</td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.fullMembershipExpiry)}</td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.gracePeriodEnd)}</td>
@@ -1142,6 +1245,228 @@ export default function MembersManagementPage() {
                 <label className="text-xs font-medium text-slate-600">Notes</label>
                 <Input className="border-slate-300 bg-white text-slate-800" value={editing.membershipNotes ?? ""} onChange={(e) => setEditing({ ...editing, membershipNotes: e.target.value })} />
               </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/90 p-3">
+              <p className="text-xs font-semibold text-slate-800">Active add-ons</p>
+              <p className="text-[11px] text-slate-600">
+                Edit renewals and notes per add-on. When the name is <span className="font-medium text-slate-700">Locker</span>, use the locker number field — it is stored in notes as{" "}
+                <span className="font-mono text-[10px] text-slate-700">Locker #: …</span> (same as payments).
+              </p>
+              {(editing.addOnSubscriptions ?? []).length === 0 ? (
+                <p className="text-xs text-slate-500">No add-ons on file for this member. Register one under Add-ons or via Payments (custom add-on).</p>
+              ) : (
+                <div className="space-y-3">
+                  {(editing.addOnSubscriptions ?? []).map((sub) => {
+                    const lockerAddon = isLockerAddonName(sub.addonName);
+                    const otherNotes = lockerAddon ? stripLockerNoteLines(sub.notes) : (sub.notes ?? "");
+                    const lockerNum = lockerAddon ? parseLockerNumberFromNotes(sub.notes) : "";
+                    return (
+                      <div key={sub.id} className="space-y-2 rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-slate-600">Add-on name</label>
+                            <Input
+                              className="border-slate-300 bg-white text-sm text-slate-800"
+                              value={sub.addonName}
+                              onChange={(e) => {
+                                const name = e.target.value;
+                                setEditing((prev) => {
+                                  if (!prev) return prev;
+                                  const wasLocker = isLockerAddonName(
+                                    (prev.addOnSubscriptions ?? []).find((s) => s.id === sub.id)?.addonName,
+                                  );
+                                  const nowLocker = isLockerAddonName(name);
+                                  return {
+                                    ...prev,
+                                    addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) => {
+                                      if (s.id !== sub.id) return s;
+                                      let notes = s.notes ?? null;
+                                      if (wasLocker && !nowLocker) {
+                                        const stripped = stripLockerNoteLines(notes);
+                                        notes = stripped ? stripped : null;
+                                      }
+                                      return { ...s, addonName: name, notes };
+                                    }),
+                                  };
+                                });
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-slate-600">Status</label>
+                            <select
+                              className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/20"
+                              value={(sub.status ?? "ACTIVE").toUpperCase() === "INACTIVE" ? "INACTIVE" : "ACTIVE"}
+                              onChange={(e) =>
+                                setEditing((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) =>
+                                          s.id === sub.id ? { ...s, status: e.target.value } : s,
+                                        ),
+                                      }
+                                    : prev,
+                                )
+                              }
+                            >
+                              <option value="ACTIVE">ACTIVE</option>
+                              <option value="INACTIVE">INACTIVE</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1.5 sm:col-span-2">
+                            <label className="text-xs font-medium text-slate-600">Next due</label>
+                            <Input
+                              className="border-slate-300 bg-white text-sm text-slate-800"
+                              type="date"
+                              value={toDateInputValue(sub.dueDate)}
+                              onChange={(e) =>
+                                setEditing((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) =>
+                                          s.id === sub.id
+                                            ? { ...s, dueDate: e.target.value ? `${e.target.value}T00:00:00.000Z` : null }
+                                            : s,
+                                        ),
+                                      }
+                                    : prev,
+                                )
+                              }
+                            />
+                          </div>
+                          {lockerAddon ? (
+                            <div className="space-y-1.5 sm:col-span-2">
+                              <label className="text-xs font-medium text-slate-600">Locker number</label>
+                              <Input
+                                className="border-slate-300 bg-white text-sm text-slate-800"
+                                value={lockerNum}
+                                onChange={(e) =>
+                                  setEditing((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) =>
+                                            s.id === sub.id
+                                              ? {
+                                                  ...s,
+                                                  notes: mergeLockerIntoNotes(stripLockerNoteLines(s.notes), e.target.value),
+                                                }
+                                              : s,
+                                          ),
+                                        }
+                                      : prev,
+                                  )
+                                }
+                                placeholder="e.g. A-12"
+                              />
+                            </div>
+                          ) : null}
+                          <div className="space-y-1.5 sm:col-span-2">
+                            <label className="text-xs font-medium text-slate-600">
+                              Notes{lockerAddon ? " (other than locker #)" : ""}
+                            </label>
+                            <textarea
+                              className="min-h-[72px] w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a5f]/20"
+                              value={otherNotes}
+                              onChange={(e) =>
+                                setEditing((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) => {
+                                          if (s.id !== sub.id) return s;
+                                          if (lockerAddon) {
+                                            return {
+                                              ...s,
+                                              notes: mergeLockerIntoNotes(e.target.value, parseLockerNumberFromNotes(s.notes)),
+                                            };
+                                          }
+                                          return { ...s, notes: e.target.value.trim() ? e.target.value : null };
+                                        }),
+                                      }
+                                    : prev,
+                                )
+                              }
+                              placeholder={lockerAddon ? "Optional details besides locker assignment…" : "Optional notes…"}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-end border-t border-slate-100 pt-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="bg-[#1e3a5f] text-white hover:bg-[#1e3a5f]/90"
+                            disabled={loading || savingAddonId === sub.id || !sub.addonName.trim()}
+                            onClick={async () => {
+                              setSavingAddonId(sub.id);
+                              try {
+                                const res = await fetch(`/api/addons/${sub.id}`, {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    addonName: sub.addonName.trim(),
+                                    status: sub.status ?? "ACTIVE",
+                                    dueDate: sub.dueDate ? toDateInputValue(sub.dueDate) : null,
+                                    notes: sub.notes?.trim() ? sub.notes : null,
+                                  }),
+                                });
+                                const json = (await res.json()) as {
+                                  success?: boolean;
+                                  error?: string;
+                                  details?: string;
+                                  data?: {
+                                    id: string;
+                                    addonName: string;
+                                    dueDate: string | Date | null;
+                                    status: string;
+                                    notes: string | null;
+                                  };
+                                };
+                                if (!json.success) {
+                                  setNotice({
+                                    type: "error",
+                                    message: json.details || json.error || "Failed to save add-on.",
+                                  });
+                                  return;
+                                }
+                                if (json.data) {
+                                  const d = json.data;
+                                  setEditing((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      addOnSubscriptions: (prev.addOnSubscriptions ?? []).map((s) =>
+                                        s.id === d.id
+                                          ? {
+                                              ...s,
+                                              addonName: d.addonName,
+                                              dueDate: d.dueDate != null ? String(d.dueDate) : null,
+                                              status: d.status,
+                                              notes: d.notes ?? null,
+                                            }
+                                          : s,
+                                      ),
+                                    };
+                                  });
+                                }
+                                await load();
+                                setNotice({ type: "success", message: "Add-on saved." });
+                              } finally {
+                                setSavingAddonId(null);
+                              }
+                            }}
+                          >
+                            {savingAddonId === sub.id ? "Saving…" : "Save add-on"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="space-y-3 rounded-lg border border-rose-200 bg-rose-50/50 p-3">

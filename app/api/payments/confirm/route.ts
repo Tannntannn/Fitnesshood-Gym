@@ -18,6 +18,7 @@ import {
   memberPaymentEarnsLoyalty,
 } from "@/lib/loyalty-earn";
 import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
+import { expireLoyaltyStarsIfInactive } from "@/lib/loyalty-expiration";
 
 type SplitInput = { method: string; amount: number; reference?: string | null };
 type PaymentDiscountTypeValue = "NONE" | "PERCENT" | "FIXED";
@@ -33,6 +34,26 @@ function parseOptionalAddOnDueDate(value: unknown): Date | null {
     throw new Error("Invalid add-on next due / expiration date.");
   }
   return d;
+}
+
+/** Same convention as members management / POS: one line `Locker #: …` in add-on notes. */
+function stripLockerNoteLines(text: string | null | undefined): string {
+  if (!text?.trim()) return "";
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*Locker\s*#\s*:?\s*/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+function mergeLockerLineIntoNotes(existingNotes: string | null | undefined, lockerNumber: string): string | null {
+  const lock = lockerNumber.trim();
+  const rest = stripLockerNoteLines(existingNotes);
+  const parts: string[] = [];
+  if (rest) parts.push(rest);
+  if (lock) parts.push(`Locker #: ${lock}`);
+  if (!parts.length) return null;
+  return parts.join("\n");
 }
 
 export async function POST(request: Request) {
@@ -62,6 +83,11 @@ export async function POST(request: Request) {
       receiptGroupId?: string | null;
       /** For custom POS add-on: optional next due / expiration (ISO or YYYY-MM-DD). Updates Add-on dashboard row. */
       addOnNextDueDate?: string | null;
+      /**
+       * When sent (including empty string), merged into linked `AddOnSubscription.notes` as `Locker #: …`.
+       * Omit for non-locker add-ons so existing notes are left unchanged on renewals.
+       */
+      addOnLockerNumber?: string | null;
       /** Months paying toward access now (all Membership tiers except Bronze). */
       paymentMonths?: number;
     };
@@ -217,6 +243,8 @@ export async function POST(request: Request) {
         const addonName = customLabel.slice(0, 120);
         const paid = nowInPH();
         const nextDue = parseOptionalAddOnDueDate(body.addOnNextDueDate);
+        const lockerKeySent = Object.prototype.hasOwnProperty.call(body, "addOnLockerNumber");
+        const lockerRaw = typeof body.addOnLockerNumber === "string" ? body.addOnLockerNumber : "";
         const existing = await tx.addOnSubscription.findFirst({
           where: {
             userId: member.id,
@@ -226,16 +254,24 @@ export async function POST(request: Request) {
         });
         let subId: string;
         if (existing) {
+          const notePatch = lockerKeySent
+            ? mergeLockerLineIntoNotes(existing.notes, lockerRaw)
+            : undefined;
           await tx.addOnSubscription.update({
             where: { id: existing.id },
             data: {
               lastPaymentAt: paid,
               status: "ACTIVE",
               ...(nextDue !== null ? { dueDate: nextDue } : {}),
+              ...(notePatch !== undefined ? { notes: notePatch } : {}),
             },
           });
           subId = existing.id;
         } else {
+          const defaultNote = "Registered from payment (POS add-on).";
+          const notes = lockerKeySent
+            ? mergeLockerLineIntoNotes(defaultNote, lockerRaw) ?? defaultNote
+            : defaultNote;
           const created = await tx.addOnSubscription.create({
             data: {
               userId: member.id,
@@ -244,7 +280,7 @@ export async function POST(request: Request) {
               dueDate: nextDue,
               status: "ACTIVE",
               lastPaymentAt: paid,
-              notes: "Registered from payment (POS add-on).",
+              notes,
             },
           });
           subId = created.id;
@@ -339,23 +375,24 @@ export async function POST(request: Request) {
 
         if (settleExistingBalanceOnly) {
           const newBalance = Math.max(0, existingMemberBalance - Number(amountNumber));
-          const membershipExpiry =
-            fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? member.monthlyExpiryDate ?? nowInPH();
-          const daysLeft = computeDaysLeft(membershipExpiry);
+          // Days-left / status follow the monthly access window, not the full lock-in horizon.
+          const accessExpiry =
+            member.monthlyExpiryDate ?? fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? nowInPH();
+          const daysLeft = computeDaysLeft(accessExpiry);
           const membershipStatus = resolveMembershipStatus(daysLeft);
           updatedMember = await tx.user.update({
             where: { id: member.id },
             data: {
               remainingBalance: toMoney(newBalance),
               fullMembershipExpiry: fullMembershipExpiryAfterLockIn,
-              membershipExpiry,
+              membershipExpiry: accessExpiry,
               daysLeft,
               membershipStatus,
               lockInLabel,
               remainingMonths: lockInRemaining,
               monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
               membershipFeeLabel: formatPesoLabel(service.membershipFee),
-              gracePeriodEnd: addDays(membershipExpiry, 7),
+              gracePeriodEnd: addDays(accessExpiry, 7),
             },
           });
         } else {
@@ -367,15 +404,16 @@ export async function POST(request: Request) {
             }
             monthlyExpiryDate = monthlyExpiryCursor as Date;
           }
-          const membershipExpiry =
-            fullMembershipExpiryAfterLockIn ?? monthlyExpiryDate ?? member.monthlyExpiryDate ?? nowInPH();
-          const daysLeft = computeDaysLeft(membershipExpiry);
+          // `fullMembershipExpiry` keeps the contract / lock-in end; `membershipExpiry` + daysLeft track the rolling monthly cycle (~accessCycleDays per payment).
+          const accessExpiry =
+            monthlyExpiryDate ?? member.monthlyExpiryDate ?? fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? nowInPH();
+          const daysLeft = computeDaysLeft(accessExpiry);
           const membershipStatus = resolveMembershipStatus(daysLeft);
           updatedMember = await tx.user.update({
             where: { id: member.id },
             data: {
               monthlyExpiryDate,
-              membershipExpiry,
+              membershipExpiry: accessExpiry,
               fullMembershipExpiry: fullMembershipExpiryAfterLockIn,
               daysLeft,
               membershipStatus,
@@ -384,7 +422,7 @@ export async function POST(request: Request) {
               remainingMonths: lockInRemaining,
               monthlyFeeLabel: formatPesoLabel(service.monthlyRate),
               membershipFeeLabel: formatPesoLabel(service.membershipFee),
-              gracePeriodEnd: addDays(membershipExpiry, 7),
+              gracePeriodEnd: addDays(accessExpiry, 7),
               ...(member.membershipStart ? {} : { membershipStart: nowInPH() }),
             },
           });
@@ -431,7 +469,12 @@ export async function POST(request: Request) {
       const loyaltyPointsEarned =
         memberPaymentEarnsLoyalty(member.role, transactionType) ? loyaltyPointsFromPesoAmount(amountNumber) : 0;
       if (loyaltyPointsEarned > 0) {
-        const prevBalance = updatedMember.loyaltyStars ?? 0;
+        await expireLoyaltyStarsIfInactive(tx, member.id, nowInPH(), session.admin.email);
+        const starsAfterInactivity = await tx.user.findUnique({
+          where: { id: member.id },
+          select: { loyaltyStars: true },
+        });
+        const prevBalance = starsAfterInactivity?.loyaltyStars ?? 0;
         const newBalance = prevBalance + loyaltyPointsEarned;
         updatedMember = await tx.user.update({
           where: { id: member.id },

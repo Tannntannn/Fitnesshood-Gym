@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { expireLoyaltyStarsIfInactive } from "@/lib/loyalty-expiration";
 import { loyaltyLedgerActiveWhere } from "@/lib/loyalty-void";
+import { nowInPH } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +124,7 @@ export async function POST(request: Request) {
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      await expireLoyaltyStarsIfInactive(tx, userId, nowInPH(), session.admin.email);
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { id: true, role: true, loyaltyStars: true, firstName: true, lastName: true },

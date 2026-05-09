@@ -32,6 +32,23 @@ export async function POST(request: Request) {
       }
     }
     if (!allowed) {
+      const pendingCode = String(formData.get("pendingAccessCode") ?? "")
+        .trim()
+        .toUpperCase();
+      if (pendingCode) {
+        const now = new Date();
+        const activeCode = await prisma.walkInAccessCode.findFirst({
+          where: {
+            code: pendingCode,
+            isActive: true,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          },
+          select: { id: true, maxUses: true, usedCount: true },
+        });
+        allowed = Boolean(activeCode && activeCode.usedCount < activeCode.maxUses);
+      }
+    }
+    if (!allowed) {
       return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
     }
 
@@ -86,7 +103,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: "Upload succeeded but URL generation failed." }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, url: data.publicUrl });
+    /** Signed URL loads in the browser when the bucket is private; `url` stays the canonical value for DB. */
+    let previewUrl = data.publicUrl;
+    const signed = await supabase.storage.from(bucket).createSignedUrl(filePath, 60 * 60 * 24);
+    if (!signed.error && signed.data?.signedUrl) previewUrl = signed.data.signedUrl;
+
+    return NextResponse.json({ success: true, url: data.publicUrl, previewUrl });
   } catch (error) {
     return NextResponse.json(
       { success: false, error: "Failed to upload image.", details: error instanceof Error ? error.message : "Unknown error" },

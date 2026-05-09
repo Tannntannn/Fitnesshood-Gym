@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getMembershipDaysLeft, getMembershipStatus, inferMembershipTier } from "@/lib/membership";
+import { getMembershipDaysLeft, getMembershipStatus, inferMembershipTier, type MembershipStatus } from "@/lib/membership";
 import { membershipPenaltySyncFromRules } from "@/lib/membership-penalty";
 import { jsonNoStore } from "@/lib/http";
 import { requireAdminSession } from "@/lib/admin-auth";
@@ -16,6 +16,11 @@ function contractPaidToDateAmount(total: unknown, remaining: unknown): number | 
   return Math.max(0, t - (Number.isFinite(r) ? r : 0));
 }
 
+/** Roster "days left" / status use the rolling monthly due date when set (matches POS), not the full lock-in date on `membershipExpiry`. */
+function accessExpiryForRoster(member: { monthlyExpiryDate: Date | null; membershipExpiry: Date | null }): Date | null {
+  return member.monthlyExpiryDate ?? member.membershipExpiry ?? null;
+}
+
 export async function GET() {
   const session = await requireAdminSession();
   if (!session) return jsonNoStore({ success: false, error: "Unauthorized" }, { status: 401 });
@@ -23,6 +28,18 @@ export async function GET() {
     const members = await prisma.user.findMany({
       where: { role: "MEMBER" },
       orderBy: { lastName: "asc" },
+      include: {
+        addOnSubscriptions: {
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            addonName: true,
+            dueDate: true,
+            status: true,
+            notes: true,
+          },
+        },
+      },
     });
     const membershipServices = await prisma.service.findMany({
       where: { name: "Membership", isActive: true },
@@ -108,8 +125,8 @@ export async function GET() {
           const paid = paidTierMonthsByUser.get(`${member.id}::${inferredTier.trim().toLowerCase()}`) ?? 0;
           return Math.max(0, Math.min(template, paid));
         })(),
-        daysLeft: getMembershipDaysLeft(member.membershipExpiry),
-        membershipStatus: getMembershipStatus(member.membershipExpiry),
+        daysLeft: getMembershipDaysLeft(accessExpiryForRoster(member)),
+        membershipStatus: getMembershipStatus(accessExpiryForRoster(member)) as MembershipStatus,
         contractPaidToDate: paid != null ? String(paid) : null,
         lastAttendanceAt: lastAttendanceByUserId.get(member.id) ?? null,
       };

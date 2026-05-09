@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LOYALTY_INACTIVITY_EXPIRE_MONTHS, LOYALTY_POINTS_EXPIRED_REASON } from "@/lib/loyalty-expiration";
 import {
   LOYALTY_VOIDED_ENTRY_REASON,
   LOYALTY_VOID_REVERSAL_REASON,
@@ -62,6 +63,7 @@ function reasonBadgeClass(reason: string, voided: boolean): string {
   if (voided) return `${base} border-slate-300 bg-slate-100 text-slate-500 line-through decoration-slate-400`;
   if (reason === VOID_REVERSAL) return `${base} border-violet-300 bg-violet-50 text-violet-800`;
   if (reason === "PAYMENT_EARNED") return `${base} border-emerald-300 bg-emerald-50 text-emerald-800`;
+  if (reason === LOYALTY_POINTS_EXPIRED_REASON) return `${base} border-rose-300 bg-rose-50 text-rose-900`;
   if (reason.includes("CLAIM") || reason.includes("REDEEM")) return `${base} border-amber-300 bg-amber-50 text-amber-900`;
   if (reason.includes("MANUAL")) return `${base} border-sky-300 bg-sky-50 text-sky-900`;
   return `${base} border-slate-200 bg-white text-slate-700`;
@@ -69,6 +71,7 @@ function reasonBadgeClass(reason: string, voided: boolean): string {
 
 function reasonShortLabel(reason: string): string {
   if (reason === "PAYMENT_EARNED") return "Payment earned";
+  if (reason === LOYALTY_POINTS_EXPIRED_REASON) return "Expired (inactive)";
   if (reason === LOYALTY_VOID_REVERSAL_REASON) return "Balance reversal";
   if (reason === LOYALTY_VOIDED_ENTRY_REASON) return "Voided entry";
   if (reason === "CLAIM_APPROVED") return "Claim approved";
@@ -201,6 +204,10 @@ export default function LoyaltyPage() {
             Earning rule: every ₱100 paid (final amount) = 1 point for members. Optional env{" "}
             <code className="rounded bg-slate-100 px-1">LOYALTY_EARNING_TRANSACTION_TYPES</code> (comma-separated types, e.g.{" "}
             <code className="rounded bg-slate-100 px-1">MONTHLY_FEE,ADD_ON,OTHER</code>) limits which payment types accrue points.
+            Balances reset to 0 after {LOYALTY_INACTIVITY_EXPIRE_MONTHS} months with no earn or redemption (ledger shows{" "}
+            <span className="font-mono text-[10px]">{LOYALTY_POINTS_EXPIRED_REASON}</span>). Schedule{" "}
+            <code className="rounded bg-slate-100 px-1">GET /api/cron/loyalty-expire</code> daily (see <code className="rounded bg-slate-100 px-1">vercel.json</code> on Vercel, or call manually with{" "}
+            <code className="rounded bg-slate-100 px-1">Authorization: Bearer CRON_SECRET</code>).
           </p>
         </div>
         <div className="grid gap-2 sm:grid-cols-3">

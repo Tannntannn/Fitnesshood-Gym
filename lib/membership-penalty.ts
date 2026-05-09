@@ -51,11 +51,13 @@ function owesContractBalance(user: MembershipPenaltyUserSlice): boolean {
 }
 
 /**
- * Same “expired” as Members Management tier tables (calendar days vs PH now).
- * Rule: expired membership + money still owed on contract → auto penalty (all tiers).
+ * Same access horizon as Members Management roster: prefer `monthlyExpiryDate` (rolling monthly cycle),
+ * not the full lock-in date on `membershipExpiry` when both exist.
+ * Rule: expired access + money still owed on contract → auto penalty (all tiers).
  */
 export function isMembershipExpiredForPenalty(user: MembershipPenaltyUserSlice): boolean {
-  return getMembershipStatus(user.membershipExpiry) === "EXPIRED";
+  const accessExpiry = user.monthlyExpiryDate ?? user.membershipExpiry;
+  return getMembershipStatus(accessExpiry) === "EXPIRED";
 }
 
 /**

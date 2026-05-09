@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { expireLoyaltyStarsIfInactive } from "@/lib/loyalty-expiration";
 import { isLoyaltyLedgerVoidedReason, LOYALTY_VOID_REVERSAL_REASON } from "@/lib/loyalty-void";
+import { nowInPH } from "@/lib/time";
 
 type Params = { params: { id: string } };
 
@@ -33,8 +35,13 @@ export async function PATCH(request: Request, { params }: Params) {
       if (!current) throw new Error("Loyalty record not found.");
       if (isLoyaltyLedgerVoidedReason(current.reason)) throw new Error("Voided entries cannot be edited.");
       if (current.reason === LOYALTY_VOID_REVERSAL_REASON) throw new Error("Reversal entries cannot be edited.");
+      await expireLoyaltyStarsIfInactive(tx, current.userId, nowInPH(), session.admin.email);
+      const userFresh = await tx.user.findUnique({
+        where: { id: current.userId },
+        select: { loyaltyStars: true },
+      });
       const delta = nextPoints - current.points;
-      const nextStars = Math.max(0, (current.user.loyaltyStars ?? 0) + delta);
+      const nextStars = Math.max(0, (userFresh?.loyaltyStars ?? 0) + delta);
       const nextEarned = nextPoints > 0 ? nextPoints : 0;
       const nextDeducted = nextPoints < 0 ? Math.abs(nextPoints) : 0;
 

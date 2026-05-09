@@ -21,7 +21,16 @@ type MemberRow = {
   coachName?: string | null;
   addOnSubscriptions?: Array<{ addonName: string }>;
 };
-type ServiceRow = { id: string; name: string; tier: string; monthlyRate: string; contractMonths: number; contractPrice: string; isActive?: boolean };
+type ServiceRow = {
+  id: string;
+  name: string;
+  tier: string;
+  monthlyRate: string;
+  membershipFee: string;
+  contractMonths: number;
+  contractPrice: string;
+  isActive?: boolean;
+};
 type CoachRow = { id: string; name: string };
 type SplitRow = { method: string; amount: string; reference: string };
 type RoleFilter = "MEMBER" | "NON_MEMBER" | "WALK_IN" | "WALK_IN_REGULAR";
@@ -150,10 +159,19 @@ type ServiceCartLine = {
   grossStr: string;
   /** Months paying toward access now (Membership except Bronze); on SGP can differ from lock-in. */
   paymentMonths?: string | null;
+  includeMembershipFee?: boolean;
+  membershipFeeStr?: string | null;
   customAddOnLabel?: string | null;
   /** YYYY-MM-DD — shown on Add-ons dashboard as next due / expiration when saving custom add-on lines. */
   addOnDueDate?: string | null;
+  /** When label looks like a locker add-on, stored in subscription notes as `Locker #: …` (same as Members Management). */
+  addOnLockerNumber?: string | null;
 };
+
+/** Show locker # field when the typed name suggests a locker add-on. */
+function customAddOnLabelLooksLikeLocker(label: string | null | undefined): boolean {
+  return (label ?? "").toLowerCase().includes("locker");
+}
 
 function newCartLineId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -170,6 +188,12 @@ function clampPayNowMonths(raw: unknown): number {
   const n = Math.trunc(Number(raw));
   if (!Number.isFinite(n)) return 1;
   return Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, n));
+}
+
+function normalizeMembershipFee(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, n);
 }
 
 /** Allocate whole-cent fixed discount across lines by gross share (last lines absorb remainder). */
@@ -463,6 +487,8 @@ export default function PaymentsPage() {
   const [customAddOnName, setCustomAddOnName] = useState("");
   const [customAddOnPrice, setCustomAddOnPrice] = useState("");
   const [customAddOnDueDate, setCustomAddOnDueDate] = useState("");
+  const [customAddOnLockerNumber, setCustomAddOnLockerNumber] = useState("");
+  const [repairingCustomCatalog, setRepairingCustomCatalog] = useState(false);
   const [enableSplit, setEnableSplit] = useState(false);
   const [splits, setSplits] = useState<SplitRow[]>([{ method: "CASH", amount: "", reference: "" }]);
   const [paymentReference, setPaymentReference] = useState("");
@@ -598,7 +624,7 @@ export default function PaymentsPage() {
       : "/api/payments?limit=200";
     const [memberRes, serviceRes, paymentsRes, coachRes] = await Promise.all([
       fetch("/api/users?view=payment"),
-      fetch("/api/services"),
+      fetch("/api/services?includeInactive=true"),
       fetch(paymentsUrl),
       fetch("/api/coaches"),
     ]);
@@ -780,15 +806,29 @@ export default function PaymentsPage() {
     if (!service) return "";
     const baseAmount = Number(service.monthlyRate);
     if (!Number.isFinite(baseAmount) || baseAmount <= 0) return "";
-    if (role === "MEMBER" && service.name === "Membership") return String(baseAmount);
+    if (service.name === "Membership") {
+      const joiningFee = role === "MEMBER" ? 0 : Number(service.membershipFee || 0);
+      return String(baseAmount + (Number.isFinite(joiningFee) ? Math.max(0, joiningFee) : 0));
+    }
     return String(baseAmount);
   };
+  const activeCatalogServices = useMemo(
+    () =>
+      services.filter((s) => {
+        const isCustomAddOn = s.name.trim().toLowerCase() === "add-on" && s.tier.trim().toLowerCase() === "custom";
+        return s.isActive !== false || isCustomAddOn;
+      }),
+    [services],
+  );
   const filteredServices = useMemo(() => {
-    if (!selectedMember) return mergeAllRoleServices(services);
-    return buildServicesForRole(services, selectedMember.role as RoleFilter);
-  }, [services, selectedMember]);
+    if (!selectedMember) return mergeAllRoleServices(activeCatalogServices);
+    return buildServicesForRole(activeCatalogServices, selectedMember.role as RoleFilter);
+  }, [activeCatalogServices, selectedMember]);
   const customAddOnService = useMemo(
-    () => services.find((s) => s.name.trim() === "Add-on" && s.tier.trim() === "Custom") ?? null,
+    () =>
+      services.find(
+        (s) => s.name.trim().toLowerCase() === "add-on" && s.tier.trim().toLowerCase() === "custom",
+      ) ?? null,
     [services],
   );
   const servicesForProductGrid = useMemo(
@@ -1113,6 +1153,18 @@ export default function PaymentsPage() {
     },
     [collectionStatus, selectedMember, selectedMemberBalance],
   );
+  const computeMembershipGross = useCallback(
+    (service: ServiceRow, months: number, includeMembershipFee: boolean, membershipFee: number): string => {
+      if (shouldAutoFillFromBalance(service)) {
+        return selectedMemberBalance.toFixed(2);
+      }
+      const monthlyRate = Number(service.monthlyRate) || 0;
+      const base = monthlyRate * Math.max(1, months);
+      const fee = includeMembershipFee ? normalizeMembershipFee(membershipFee) : 0;
+      return (base + fee).toFixed(2);
+    },
+    [selectedMemberBalance, shouldAutoFillFromBalance],
+  );
   const unitPriceForService = (service: ServiceRow): number => {
     if (shouldAutoFillFromBalance(service)) {
       return selectedMemberBalance;
@@ -1139,9 +1191,12 @@ export default function PaymentsPage() {
         const payMonthsRaw = Math.trunc(Number(current.paymentMonths));
         const paymentMonths =
           Number.isFinite(payMonthsRaw) && payMonthsRaw > 0 ? String(clampPayNowMonths(payMonthsRaw)) : String(qty);
-        const grossStr = shouldAutoFillFromBalance(service)
-          ? selectedMemberBalance.toFixed(2)
-          : ((Number(service.monthlyRate) || 0) * Number(paymentMonths)).toFixed(2);
+        const grossStr = computeMembershipGross(
+          service,
+          Number(paymentMonths),
+          Boolean(current.includeMembershipFee),
+          normalizeMembershipFee(current.membershipFeeStr ?? service.membershipFee),
+        );
         next[idx] = { ...current, paymentMonths, grossStr };
         return next;
       }
@@ -1169,9 +1224,14 @@ export default function PaymentsPage() {
       };
       if (isMembershipNonBronze(service)) {
         nextLine.paymentMonths = "1";
-        nextLine.grossStr = shouldAutoFillFromBalance(service)
-          ? selectedMemberBalance.toFixed(2)
-          : (Number(service.monthlyRate) || 0).toFixed(2);
+        nextLine.includeMembershipFee = !selectedMember?.membershipTier;
+        nextLine.membershipFeeStr = String(Number(service.membershipFee) || 0);
+        nextLine.grossStr = computeMembershipGross(
+          service,
+          1,
+          Boolean(nextLine.includeMembershipFee),
+          normalizeMembershipFee(nextLine.membershipFeeStr),
+        );
       }
       return [...prev, nextLine];
     });
@@ -1192,15 +1252,21 @@ export default function PaymentsPage() {
             Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, Math.round(selectedMemberBalance / rate) || 1),
           );
           next.paymentMonths = String(m);
+          next.grossStr = computeMembershipGross(
+            svc,
+            m,
+            Boolean(next.includeMembershipFee),
+            normalizeMembershipFee(next.membershipFeeStr ?? svc.membershipFee),
+          );
         }
         return next;
       }),
     );
-  }, [collectionStatus, selectedMember, selectedMemberBalance, services, shouldAutoFillFromBalance]);
+  }, [collectionStatus, computeMembershipGross, selectedMember, selectedMemberBalance, services, shouldAutoFillFromBalance]);
 
   const appendCustomAddOnToCart = () => {
     if (!customAddOnService) {
-      showNotice("error", "Add-on / Custom service is missing. Run prisma/sql/add_payment_custom_add_on_label.sql on the database.");
+      showNotice("error", "Add-on / Custom catalog row is missing. Use \"Repair catalog row\" below, then retry.");
       return;
     }
     const label = customAddOnName.trim();
@@ -1221,12 +1287,48 @@ export default function PaymentsPage() {
         grossStr: String(priceNum),
         customAddOnLabel: label.slice(0, 200),
         addOnDueDate: customAddOnDueDate.trim() || null,
+        ...(customAddOnLabelLooksLikeLocker(label)
+          ? { addOnLockerNumber: customAddOnLockerNumber.trim() || null }
+          : {}),
       },
     ]);
     setCustomAddOnName("");
     setCustomAddOnPrice("");
     setCustomAddOnDueDate("");
+    setCustomAddOnLockerNumber("");
     showNotice("success", "Add-on line added to cart.");
+  };
+
+  const repairCustomAddOnCatalog = async () => {
+    if (repairingCustomCatalog) return;
+    setRepairingCustomCatalog(true);
+    try {
+      const res = await fetch("/api/services", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Add-on",
+          tier: "Custom",
+          monthlyRate: 1,
+          membershipFee: 0,
+          contractPrice: 0,
+          contractMonths: 0,
+          accessCycleDays: 30,
+          isActive: true,
+        }),
+      });
+      const json = (await res.json()) as { success?: boolean; error?: string };
+      if (!json.success && !String(json.error ?? "").toLowerCase().includes("already exists")) {
+        showNotice("error", json.error ?? "Could not repair Add-on / Custom catalog row.");
+        return;
+      }
+      await load();
+      showNotice("success", "Add-on / Custom catalog row is ready.");
+    } catch {
+      showNotice("error", "Could not repair Add-on / Custom catalog row.");
+    } finally {
+      setRepairingCustomCatalog(false);
+    }
   };
 
   const peso = (value: number) =>
@@ -1370,6 +1472,9 @@ export default function PaymentsPage() {
                   ...((line.addOnDueDate ?? "").trim()
                     ? { addOnNextDueDate: (line.addOnDueDate ?? "").trim() }
                     : {}),
+                  ...(customAddOnLabelLooksLikeLocker(customLabel)
+                    ? { addOnLockerNumber: (line.addOnLockerNumber ?? "").trim() }
+                    : {}),
                 }
                 : {
                   transactionType:
@@ -1392,6 +1497,10 @@ export default function PaymentsPage() {
                             ),
                           ),
                         ),
+                        membershipFeeAmount:
+                          line.includeMembershipFee && svc?.name === "Membership"
+                            ? normalizeMembershipFee(line.membershipFeeStr ?? svc?.membershipFee ?? 0)
+                            : 0,
                       }
                     : {}),
                 }),
@@ -1432,6 +1541,7 @@ export default function PaymentsPage() {
       setCustomAddOnName("");
       setCustomAddOnPrice("");
       setCustomAddOnDueDate("");
+      setCustomAddOnLockerNumber("");
       setOrNumber("");
     }
   }
@@ -1578,6 +1688,8 @@ export default function PaymentsPage() {
                     setCartLines([]);
                     setCustomAddOnName("");
                     setCustomAddOnPrice("");
+                    setCustomAddOnDueDate("");
+                    setCustomAddOnLockerNumber("");
                   }}
                 >
                   Clear cart
@@ -1673,45 +1785,65 @@ export default function PaymentsPage() {
                 </span>
               </label>
               {customAddOnPanelOpen ? (
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-600">What it is</label>
-                    <Input
-                      value={customAddOnName}
-                      onChange={(e) => setCustomAddOnName(e.target.value)}
-                      placeholder="e.g. Locker monthly, Wi‑Fi pass, towel pack"
-                      maxLength={200}
-                    />
+                <div className="space-y-2">
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-slate-600">What it is</label>
+                      <Input
+                        value={customAddOnName}
+                        onChange={(e) => setCustomAddOnName(e.target.value)}
+                        placeholder="e.g. Locker monthly, Wi‑Fi pass, towel pack"
+                        maxLength={200}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-slate-600">Price (₱)</label>
+                      <Input
+                        inputMode="decimal"
+                        value={customAddOnPrice}
+                        onChange={(e) => setCustomAddOnPrice(e.target.value)}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-slate-600">Next due / expires (optional)</label>
+                      <Input
+                        type="date"
+                        value={customAddOnDueDate}
+                        onChange={(e) => setCustomAddOnDueDate(e.target.value)}
+                        className="h-10"
+                      />
+                    </div>
+                    <Button type="button" className="h-10 shrink-0" onClick={appendCustomAddOnToCart}>
+                      Add to cart
+                    </Button>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-600">Price (₱)</label>
-                    <Input
-                      inputMode="decimal"
-                      value={customAddOnPrice}
-                      onChange={(e) => setCustomAddOnPrice(e.target.value)}
-                      placeholder="0"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-slate-600">Next due / expires (optional)</label>
-                    <Input
-                      type="date"
-                      value={customAddOnDueDate}
-                      onChange={(e) => setCustomAddOnDueDate(e.target.value)}
-                      className="h-10"
-                    />
-                  </div>
-                  <Button type="button" className="h-10 shrink-0" onClick={appendCustomAddOnToCart}>
-                    Add to cart
-                  </Button>
+                  {customAddOnLabelLooksLikeLocker(customAddOnName) ? (
+                    <div className="space-y-1 sm:max-w-md">
+                      <label className="text-[11px] font-medium text-slate-600">Locker number</label>
+                      <Input
+                        value={customAddOnLockerNumber}
+                        onChange={(e) => setCustomAddOnLockerNumber(e.target.value)}
+                        placeholder="e.g. A-12 — saved on the member's add-on (same as Members Management)"
+                        className="h-10"
+                      />
+                      <p className="text-[10px] text-slate-500">
+                        Shown when the name includes &quot;locker&quot;. Syncs to the add-on record as <span className="font-mono">Locker #: …</span> for editing under Members Management.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {!customAddOnService && customAddOnPanelOpen ? (
-                <p className="text-[11px] text-amber-800">
-                  Catalog row missing: run{" "}
-                  <code className="rounded bg-amber-100 px-1">prisma/sql/add_payment_custom_add_on_label.sql</code> on your
-                  database, then reload services.
-                </p>
+                <div className="flex flex-wrap items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
+                  <span>
+                    Catalog row missing: run{" "}
+                    <code className="rounded bg-amber-100 px-1">prisma/sql/add_payment_custom_add_on_label.sql</code> or use quick repair.
+                  </span>
+                  <Button type="button" size="sm" variant="outline" disabled={repairingCustomCatalog} onClick={repairCustomAddOnCatalog}>
+                    {repairingCustomCatalog ? "Repairing..." : "Repair catalog row"}
+                  </Button>
+                </div>
               ) : null}
             </div>
             {cartLines.length > 0 ? (
@@ -1757,10 +1889,12 @@ export default function PaymentsPage() {
                                 onClick={() => {
                                   const cur = clampPayNowMonths(line.paymentMonths ?? 1);
                                   const months = Math.max(1, cur - 1);
-                                  const monthlyRate = Number(svc.monthlyRate) || 0;
-                                  const nextGross = shouldAutoFillFromBalance(svc)
-                                    ? selectedMemberBalance.toFixed(2)
-                                    : (monthlyRate * months).toFixed(2);
+                                  const nextGross = computeMembershipGross(
+                                    svc,
+                                    months,
+                                    Boolean(line.includeMembershipFee),
+                                    normalizeMembershipFee(line.membershipFeeStr ?? svc.membershipFee),
+                                  );
                                   setCartLines((prev) =>
                                     prev.map((l) =>
                                       l.lineId === line.lineId
@@ -1779,10 +1913,12 @@ export default function PaymentsPage() {
                                 onChange={(e) => {
                                   const raw = e.target.value.replace(/[^\d]/g, "");
                                   const months = clampPayNowMonths(raw || 1);
-                                  const monthlyRate = Number(svc.monthlyRate) || 0;
-                                  const nextGross = shouldAutoFillFromBalance(svc)
-                                    ? selectedMemberBalance.toFixed(2)
-                                    : (monthlyRate * months).toFixed(2);
+                                  const nextGross = computeMembershipGross(
+                                    svc,
+                                    months,
+                                    Boolean(line.includeMembershipFee),
+                                    normalizeMembershipFee(line.membershipFeeStr ?? svc.membershipFee),
+                                  );
                                   setCartLines((prev) =>
                                     prev.map((l) =>
                                       l.lineId === line.lineId
@@ -1803,10 +1939,12 @@ export default function PaymentsPage() {
                                 onClick={() => {
                                   const cur = clampPayNowMonths(line.paymentMonths ?? 1);
                                   const months = Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, cur + 1);
-                                  const monthlyRate = Number(svc.monthlyRate) || 0;
-                                  const nextGross = shouldAutoFillFromBalance(svc)
-                                    ? selectedMemberBalance.toFixed(2)
-                                    : (monthlyRate * months).toFixed(2);
+                                  const nextGross = computeMembershipGross(
+                                    svc,
+                                    months,
+                                    Boolean(line.includeMembershipFee),
+                                    normalizeMembershipFee(line.membershipFeeStr ?? svc.membershipFee),
+                                  );
                                   setCartLines((prev) =>
                                     prev.map((l) =>
                                       l.lineId === line.lineId
@@ -1819,23 +1957,88 @@ export default function PaymentsPage() {
                                 +
                               </button>
                             </div>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <label className="inline-flex items-center gap-1 text-[10px] text-slate-600">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(line.includeMembershipFee)}
+                                  onChange={(e) => {
+                                    const includeMembershipFee = e.target.checked;
+                                    const months = clampPayNowMonths(line.paymentMonths ?? 1);
+                                    const fee = normalizeMembershipFee(line.membershipFeeStr ?? svc.membershipFee);
+                                    const nextGross = computeMembershipGross(svc, months, includeMembershipFee, fee);
+                                    setCartLines((prev) =>
+                                      prev.map((l) =>
+                                        l.lineId === line.lineId
+                                          ? { ...l, includeMembershipFee, grossStr: nextGross }
+                                          : l,
+                                      ),
+                                    );
+                                  }}
+                                />
+                                Include membership fee
+                              </label>
+                              <Input
+                                className="h-8 w-24 text-right"
+                                inputMode="decimal"
+                                value={line.membershipFeeStr ?? String(Number(svc.membershipFee) || 0)}
+                                onChange={(e) => {
+                                  const nextFee = e.target.value;
+                                  const months = clampPayNowMonths(line.paymentMonths ?? 1);
+                                  const nextGross = computeMembershipGross(
+                                    svc,
+                                    months,
+                                    Boolean(line.includeMembershipFee),
+                                    normalizeMembershipFee(nextFee),
+                                  );
+                                  setCartLines((prev) =>
+                                    prev.map((l) =>
+                                      l.lineId === line.lineId
+                                        ? { ...l, membershipFeeStr: nextFee, grossStr: nextGross }
+                                        : l,
+                                    ),
+                                  );
+                                }}
+                              />
+                            </div>
                           </div>
                         ) : null}
                         {customLbl ? (
-                          <div className="flex flex-col gap-0.5">
-                            <label className="text-[10px] font-medium text-slate-500">Next due / expires</label>
-                            <Input
-                              type="date"
-                              className="h-9 w-[11.5rem]"
-                              value={line.addOnDueDate ?? ""}
-                              onChange={(e) =>
-                                setCartLines((prev) =>
-                                  prev.map((l) =>
-                                    l.lineId === line.lineId ? { ...l, addOnDueDate: e.target.value || null } : l,
-                                  ),
-                                )
-                              }
-                            />
+                          <div className="flex flex-col gap-1">
+                            <div className="flex flex-col gap-0.5">
+                              <label className="text-[10px] font-medium text-slate-500">Next due / expires</label>
+                              <Input
+                                type="date"
+                                className="h-9 w-[11.5rem]"
+                                value={line.addOnDueDate ?? ""}
+                                onChange={(e) =>
+                                  setCartLines((prev) =>
+                                    prev.map((l) =>
+                                      l.lineId === line.lineId ? { ...l, addOnDueDate: e.target.value || null } : l,
+                                    ),
+                                  )
+                                }
+                              />
+                            </div>
+                            {customAddOnLabelLooksLikeLocker(customLbl) ? (
+                              <div className="flex min-w-[10rem] flex-col gap-0.5">
+                                <label className="text-[10px] font-medium text-slate-500">Locker number</label>
+                                <Input
+                                  className="h-9"
+                                  value={line.addOnLockerNumber ?? ""}
+                                  onChange={(e) =>
+                                    setCartLines((prev) =>
+                                      prev.map((l) =>
+                                        l.lineId === line.lineId
+                                          ? { ...l, addOnLockerNumber: e.target.value || null }
+                                          : l,
+                                      ),
+                                    )
+                                  }
+                                  placeholder="e.g. A-12"
+                                />
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
                         <Button
@@ -2150,6 +2353,9 @@ export default function PaymentsPage() {
                         {svc && svc.name === "Membership" ? (
                           <p className="mt-1 text-[11px] text-slate-500">
                             Per month {peso(Number(svc.monthlyRate) || 0)}
+                            {Boolean(line.includeMembershipFee)
+                              ? ` · Membership fee ${peso(normalizeMembershipFee(line.membershipFeeStr ?? svc.membershipFee ?? 0))}`
+                              : ""}
                             {isMembershipNonBronze(svc)
                                 ? ` · Pay now ${Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, Number(line.paymentMonths ?? 1) || 1))} mo · Lock-in ${Math.max(0, Number(svc.contractMonths) || 0)} mo`
                                 : svc.contractMonths > 1

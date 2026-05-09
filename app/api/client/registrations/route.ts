@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { resolveProfileImageUrl } from "@/lib/profile-image";
 
 export async function GET(request: Request) {
   const session = await requireAdminSession();
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
   const safeTake = Number.isFinite(take) ? Math.min(100, Math.max(1, Math.trunc(take))) : 25;
   const isValidStatus = status === "REGISTERED" || status === "APPROVED" || status === "DECLINED";
 
-  const data = await prisma.walkInRegistration.findMany({
+  const rows = await prisma.walkInRegistration.findMany({
     where: isValidStatus ? { status: status as "REGISTERED" | "APPROVED" | "DECLINED" } : undefined,
     orderBy: { createdAt: "desc" },
     take: safeTake,
@@ -37,6 +38,13 @@ export async function GET(request: Request) {
       },
     },
   });
+
+  const data = await Promise.all(
+    rows.map(async (row) => ({
+      ...row,
+      profileImageUrl: (await resolveProfileImageUrl(row.profileImageUrl)) ?? row.profileImageUrl,
+    })),
+  );
 
   return NextResponse.json({ success: true, data });
 }

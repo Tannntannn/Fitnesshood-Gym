@@ -87,6 +87,10 @@ model User {
 
   membershipStart  DateTime?
   membershipExpiry DateTime?
+  membershipTierStart DateTime?
+  membershipTierExpiry DateTime?
+  membershipJoinedStart DateTime?
+  membershipJoinedExpiry DateTime?
   membershipTier   String?      @db.Text
   lockInLabel      String?      @db.Text
   monthlyFeeLabel  String?      @db.Text
@@ -120,6 +124,21 @@ model User {
   loyaltyClaims LoyaltyClaim[]
   addOnSubscriptions AddOnSubscription[]
   walkInRegistrations WalkInRegistration[]
+  lockInManualEntries LockInManualEntry[]
+}
+
+model LockInManualEntry {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paidMonths  Int      @default(1)
+  paidAt      DateTime
+  notes       String?  @db.Text
+  createdBy   String?  @db.VarChar(191)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, paidAt])
 }
 
 model WalkInAccessCode {

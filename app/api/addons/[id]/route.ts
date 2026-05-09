@@ -11,14 +11,27 @@ export async function PATCH(request: Request, { params }: Params) {
   if (!session) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const body = (await request.json()) as {
+      addonName?: string;
       dueDate?: string | null;
       status?: string;
       notes?: string | null;
       markPaidNow?: boolean;
     };
+    let addonName: string | undefined;
+    if (body.addonName !== undefined) {
+      const t = body.addonName.trim();
+      if (!t) {
+        return NextResponse.json({ success: false, error: "Add-on name cannot be empty." }, { status: 400 });
+      }
+      if (t.length > 120) {
+        return NextResponse.json({ success: false, error: "Add-on name is too long." }, { status: 400 });
+      }
+      addonName = t;
+    }
     const updated = await prisma.addOnSubscription.update({
       where: { id: params.id },
       data: {
+        addonName,
         dueDate: body.dueDate === undefined ? undefined : body.dueDate ? new Date(body.dueDate) : null,
         status: body.status ? body.status.trim().toUpperCase() : undefined,
         notes: body.notes === undefined ? undefined : body.notes?.trim() || null,

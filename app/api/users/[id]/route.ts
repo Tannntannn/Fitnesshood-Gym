@@ -69,6 +69,10 @@ export async function PATCH(request: Request, { params }: Params) {
       renewDays?: number;
       membershipStart?: string | null;
       membershipExpiry?: string | null;
+      membershipTierStart?: string | null;
+      membershipTierExpiry?: string | null;
+      membershipJoinedStart?: string | null;
+      membershipJoinedExpiry?: string | null;
       memberPassword?: string;
       membershipTier?: string | null;
       lockInLabel?: string | null;
@@ -84,6 +88,7 @@ export async function PATCH(request: Request, { params }: Params) {
       membershipPenalty?: boolean;
       membershipPenaltyNotes?: string | null;
       membershipPenaltyUseAuto?: boolean;
+      remainingMonths?: number | null;
     };
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -125,6 +130,12 @@ export async function PATCH(request: Request, { params }: Params) {
         if (body.membershipExpiry !== undefined) data.membershipExpiry = body.membershipExpiry ? new Date(body.membershipExpiry) : null;
       }
       if (effectiveRole === "MEMBER") {
+        if (body.membershipTierStart !== undefined) data.membershipTierStart = body.membershipTierStart ? new Date(body.membershipTierStart) : null;
+        if (body.membershipTierExpiry !== undefined) data.membershipTierExpiry = body.membershipTierExpiry ? new Date(body.membershipTierExpiry) : null;
+        if (body.membershipJoinedStart !== undefined) data.membershipJoinedStart = body.membershipJoinedStart ? new Date(body.membershipJoinedStart) : null;
+        if (body.membershipJoinedExpiry !== undefined) data.membershipJoinedExpiry = body.membershipJoinedExpiry ? new Date(body.membershipJoinedExpiry) : null;
+      }
+      if (effectiveRole === "MEMBER") {
         if (body.membershipTier !== undefined) data.membershipTier = body.membershipTier ? body.membershipTier.trim() : null;
         if (body.lockInLabel !== undefined) data.lockInLabel = body.lockInLabel ? body.lockInLabel.trim() : null;
         if (body.monthlyFeeLabel !== undefined) data.monthlyFeeLabel = body.monthlyFeeLabel ? body.monthlyFeeLabel.trim() : null;
@@ -151,6 +162,12 @@ export async function PATCH(request: Request, { params }: Params) {
       if (typeof body.memberPassword === "string" && body.memberPassword.trim().length > 0) {
         data.memberPasswordHash = await bcrypt.hash(body.memberPassword.trim(), 10);
       }
+      if (body.remainingMonths !== undefined && effectiveRole === "MEMBER") {
+        data.remainingMonths =
+          body.remainingMonths == null || !Number.isFinite(Number(body.remainingMonths))
+            ? null
+            : Math.max(0, Math.trunc(Number(body.remainingMonths)));
+      }
 
       let roleChangedTo: UserRole | null = null;
       if (body.role) {
@@ -165,6 +182,10 @@ export async function PATCH(request: Request, { params }: Params) {
         if (body.role === "MEMBER" && !existing.membershipStart) {
           data.membershipStart = now;
           data.membershipExpiry = addDays(now, 30);
+          data.membershipTierStart = now;
+          data.membershipTierExpiry = addDays(now, 30);
+          data.membershipJoinedStart = now;
+          data.membershipJoinedExpiry = addDays(now, 365);
         }
 
         // Non-members and walk-ins should not carry membership dates.
@@ -181,6 +202,10 @@ export async function PATCH(request: Request, { params }: Params) {
           data.freezeEndsAt = null;
           data.freezeDaysTotal = null;
           data.membershipNotes = null;
+          data.membershipTierStart = null;
+          data.membershipTierExpiry = null;
+          data.membershipJoinedStart = null;
+          data.membershipJoinedExpiry = null;
         }
       }
 
@@ -193,6 +218,8 @@ export async function PATCH(request: Request, { params }: Params) {
           existing.membershipExpiry && isAfter(existing.membershipExpiry, now) ? existing.membershipExpiry : now;
         data.membershipStart = existing.membershipStart ?? now;
         data.membershipExpiry = addDays(base, renewDays);
+        data.membershipTierStart = now;
+        data.membershipTierExpiry = addDays(now, renewDays);
       }
 
       const freezeEndedNow =

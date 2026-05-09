@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { expireLoyaltyStarsIfInactive } from "@/lib/loyalty-expiration";
+import { nowInPH } from "@/lib/time";
 
 type Params = { params: { id: string } };
 
@@ -24,6 +26,8 @@ export async function PATCH(request: Request, { params }: Params) {
       if (!claim) throw new Error("Claim not found.");
       if (claim.status !== "PENDING") throw new Error("Claim already processed.");
 
+      await expireLoyaltyStarsIfInactive(tx, claim.userId, nowInPH(), session.admin.email);
+
       if (action === "REJECT") {
         return tx.loyaltyClaim.update({
           where: { id: params.id },
@@ -44,7 +48,11 @@ export async function PATCH(request: Request, { params }: Params) {
         });
       }
 
-      const currentStars = claim.user.loyaltyStars ?? 0;
+      const freshStars = await tx.user.findUnique({
+        where: { id: claim.userId },
+        select: { loyaltyStars: true },
+      });
+      const currentStars = freshStars?.loyaltyStars ?? 0;
       if (currentStars < claim.pointsRequired) {
         throw new Error("Insufficient points.");
       }

@@ -21,7 +21,10 @@ export default function ClientLoginPage() {
   const [accessCode, setAccessCode] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  /** Canonical public storage URL sent to register/activate APIs. */
   const [profileImageUrl, setProfileImageUrl] = useState("");
+  /** Short-lived signed URL for <img> preview (private buckets). */
+  const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [error, setError] = useState("");
@@ -64,6 +67,7 @@ export default function ClientLoginPage() {
               setMode("activate");
               setError("");
               setSuccess("");
+              setProfileImagePreviewUrl("");
             }}
           >
             Activate
@@ -76,6 +80,7 @@ export default function ClientLoginPage() {
               setMode("register");
               setError("");
               setSuccess("");
+              setProfileImagePreviewUrl("");
             }}
           >
             Register
@@ -88,6 +93,7 @@ export default function ClientLoginPage() {
               setMode("login");
               setError("");
               setSuccess("");
+              setProfileImagePreviewUrl("");
             }}
           >
             Login
@@ -184,11 +190,16 @@ export default function ClientLoginPage() {
                 const formData = new FormData();
                 formData.append("file", file);
                 if (email.trim()) formData.append("pendingEmail", email.trim().toLowerCase());
+                if (mode === "register" && accessCode.trim()) {
+                  formData.append("pendingAccessCode", accessCode.trim().toUpperCase());
+                }
                 try {
                   const res = await fetch("/api/upload/profile", { method: "POST", body: formData });
-                  const json = (await res.json()) as { success: boolean; url?: string };
-                  if (json.success && json.url) setProfileImageUrl(json.url);
-                  else setError("Image upload failed.");
+                  const json = (await res.json()) as { success: boolean; url?: string; previewUrl?: string; error?: string };
+                  if (json.success && json.url) {
+                    setProfileImageUrl(json.url);
+                    setProfileImagePreviewUrl(json.previewUrl?.trim() || json.url);
+                  } else setError(json.error ?? "Image upload failed.");
                 } catch {
                   setError("Image upload failed.");
                 } finally {
@@ -198,9 +209,18 @@ export default function ClientLoginPage() {
               }}
             />
             {uploadingImage ? <p className="text-xs text-slate-500">Uploading image...</p> : null}
+            {mode === "register" ? (
+              <p className="text-[11px] text-slate-400">
+                Enter your <span className="font-medium text-slate-300">admin access code</span> first, then pick a photo — the server checks the code before upload.
+              </p>
+            ) : null}
             {profileImageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={profileImageUrl} alt="Profile preview" className="h-16 w-16 rounded-lg border border-slate-200 object-cover" />
+              <img
+                src={profileImagePreviewUrl || profileImageUrl}
+                alt="Profile preview"
+                className="h-16 w-16 rounded-lg border border-slate-200 object-cover bg-white/10"
+              />
             ) : null}
           </div>
         ) : null}
@@ -273,6 +293,7 @@ export default function ClientLoginPage() {
                 setAccessCode("");
                 setPassword("");
                 setProfileImageUrl("");
+                setProfileImagePreviewUrl("");
                 return;
               }
               if (mode === "activate") {
