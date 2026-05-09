@@ -368,16 +368,22 @@ export async function POST(request: Request) {
         const lockInRemaining = Math.max(lockInTemplate - lockInPaidMonths, 0);
         lockInPaidMonthsForSummary = lockInTemplate > 0 ? lockInPaidMonths : null;
         const now = nowInPH();
-        const fullExpiryAnchor = member.fullMembershipExpiry && member.fullMembershipExpiry.getTime() >= now.getTime() ? member.fullMembershipExpiry : now;
+        /**
+         * Contract horizon for lock-in: "now + remaining obligation months" (not old `fullMembershipExpiry + remaining`,
+         * which double-extended). When obligation is satisfied, clear the field so days-left fallbacks use rolling access only.
+         */
         const fullMembershipExpiryAfterLockIn =
-          lockInRemaining > 0 ? addMonths(fullExpiryAnchor, lockInRemaining) : member.fullMembershipExpiry;
+          lockInRemaining > 0 ? addMonths(now, lockInRemaining) : null;
         const lockInLabel = lockInRemaining > 0 ? `${lockInRemaining} Months Lock-In Left` : "No Lock-in";
 
         if (settleExistingBalanceOnly) {
           const newBalance = Math.max(0, existingMemberBalance - Number(amountNumber));
-          // Days-left / status follow the monthly access window, not the full lock-in horizon.
+          // Days-left / status follow rolling access; only fall back to contract horizon while lock-in months remain.
           const accessExpiry =
-            member.monthlyExpiryDate ?? fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? nowInPH();
+            member.monthlyExpiryDate ??
+            member.membershipExpiry ??
+            (lockInRemaining > 0 ? fullMembershipExpiryAfterLockIn : null) ??
+            nowInPH();
           const daysLeft = computeDaysLeft(accessExpiry);
           const membershipStatus = resolveMembershipStatus(daysLeft);
           updatedMember = await tx.user.update({
@@ -404,9 +410,13 @@ export async function POST(request: Request) {
             }
             monthlyExpiryDate = monthlyExpiryCursor as Date;
           }
-          // `fullMembershipExpiry` keeps the contract / lock-in end; `membershipExpiry` + daysLeft track the rolling monthly cycle (~accessCycleDays per payment).
+          // `fullMembershipExpiry` keeps the contract / lock-in end while months remain; `membershipExpiry` + daysLeft track the rolling cycle. No contract fallback after lock-in completes.
           const accessExpiry =
-            monthlyExpiryDate ?? member.monthlyExpiryDate ?? fullMembershipExpiryAfterLockIn ?? member.membershipExpiry ?? nowInPH();
+            monthlyExpiryDate ??
+            member.monthlyExpiryDate ??
+            member.membershipExpiry ??
+            (lockInRemaining > 0 ? fullMembershipExpiryAfterLockIn : null) ??
+            nowInPH();
           const daysLeft = computeDaysLeft(accessExpiry);
           const membershipStatus = resolveMembershipStatus(daysLeft);
           updatedMember = await tx.user.update({

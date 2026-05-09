@@ -250,6 +250,13 @@ function rosterAccessExpiryIso(member: ManagedMember): string | null {
   return member.membershipExpiry ?? null;
 }
 
+/** Full lock-in horizon while set; after lock-in completes the API clears it — then show rolling access so the column matches POS refresh. */
+function membershipContractEndIso(member: ManagedMember): string | null {
+  const full = member.fullMembershipExpiry?.trim();
+  if (full) return full;
+  return rosterAccessExpiryIso(member);
+}
+
 const EDIT_MODAL_TIER_VALUES = new Set([
   "Bronze",
   "Silver",
@@ -1062,7 +1069,16 @@ export default function MembersManagementPage() {
                                   {formatLongDate(rosterAccessExpiryIso(member))}
                                 </td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.createdAt)}</td>
-                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.fullMembershipExpiry)}</td>
+                                <td
+                                  className="px-2.5 py-2 align-middle text-slate-700"
+                                  title={
+                                    member.fullMembershipExpiry?.trim()
+                                      ? "Contract / lock-in end date"
+                                      : "Rolling access end (lock-in complete or no contract horizon)"
+                                  }
+                                >
+                                  {formatLongDate(membershipContractEndIso(member))}
+                                </td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.gracePeriodEnd)}</td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{member.monthlyFeeLabel?.trim() || "—"}</td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{member.membershipFeeLabel?.trim() || "—"}</td>
