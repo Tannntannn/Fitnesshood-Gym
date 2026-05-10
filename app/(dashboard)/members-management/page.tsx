@@ -1978,7 +1978,7 @@ export default function MembersManagementPage() {
 
                   const fStart = editing.freezeStartedAt?.trim() || null;
                   const fEndRaw = editing.freezeEndsAt?.trim() || null;
-                  let fDays = editing.freezeDaysTotal;
+                  const fDays = editing.freezeDaysTotal;
                   let fEnd = fEndRaw;
                   if (fStart && !fEnd && fDays != null && fDays > 0) {
                     fEnd = addCalendarDaysUtc(fStart, fDays);

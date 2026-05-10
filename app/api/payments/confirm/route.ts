@@ -351,15 +351,6 @@ export async function POST(request: Request) {
         );
         const rowsExclCurrent = fullPaidSameTierRows.filter((r) => r.id !== payment.id);
         const sumMonthsExclCurrent = rowsExclCurrent.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
-        const currentRow = fullPaidSameTierRows.find((r) => r.id === payment.id);
-        const currentPaymentLockInMonths = currentRow
-          ? monthsFromMembershipPaymentRow(currentRow)
-          : Math.max(
-              1,
-              monthlyRateNum > 0 && Number.isFinite(monthlyRateNum)
-                ? Math.trunc(Math.round(grossAmountNumber / monthlyRateNum) || 1)
-                : 1,
-            );
         let fullPaidSameTierMonths = rowsAfterAnchor.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
         let priorMonthsInCurrentCycleExclCurrent = 0;
         if (lockInTemplate > 0 && member.role === "MEMBER") {
