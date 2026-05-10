@@ -1,5 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 
+/** Default interactive `prisma.$transaction` timeout is 5s — confirm payment / lock-in paths can exceed that on slow DB or cold start. */
+export const PRISMA_INTERACTIVE_TX_OPTIONS = {
+  maxWait: 15_000,
+  timeout: 30_000,
+} as const;
+
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 let prismaClient = globalForPrisma.prisma;

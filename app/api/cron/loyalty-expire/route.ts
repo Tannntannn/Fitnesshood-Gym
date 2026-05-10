@@ -6,7 +6,7 @@ import { nowInPH } from "@/lib/time";
 export const dynamic = "force-dynamic";
 
 /**
- * Batch job: expire loyalty for all members with balance &gt; 0 and 6+ months since last activity.
+ * Batch job: expire loyalty for all users with balance &gt; 0 and 6+ months since last activity.
  * Allowed when invoked by Vercel Cron (`x-vercel-cron: 1` on Vercel), or manually with
  * `Authorization: Bearer <CRON_SECRET>` if `CRON_SECRET` is set.
  */
@@ -22,20 +22,20 @@ export async function GET(request: Request) {
   const now = nowInPH();
   try {
     const data = await prisma.$transaction(async (tx) => {
-      const members = await tx.user.findMany({
-        where: { role: "MEMBER", loyaltyStars: { gt: 0 } },
+      const candidates = await tx.user.findMany({
+        where: { loyaltyStars: { gt: 0 } },
         select: { id: true },
       });
       let expiredUsers = 0;
       let totalPointsRemoved = 0;
-      for (const m of members) {
+      for (const m of candidates) {
         const r = await expireLoyaltyStarsIfInactive(tx, m.id, now, "CRON");
         if (r.expired) {
           expiredUsers += 1;
           totalPointsRemoved += r.pointsRemoved;
         }
       }
-      return { scanned: members.length, expiredUsers, totalPointsRemoved };
+      return { scanned: candidates.length, expiredUsers, totalPointsRemoved };
     });
 
     return NextResponse.json({ success: true, data });

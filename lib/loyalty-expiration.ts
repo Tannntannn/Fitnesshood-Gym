@@ -30,8 +30,9 @@ export async function getLoyaltyLastActivityAt(
 }
 
 /**
- * If the member has a positive balance and their last qualifying ledger activity is older than
+ * If the user has a positive balance and their last qualifying ledger activity is older than
  * `LOYALTY_INACTIVITY_EXPIRE_MONTHS`, creates a `POINTS_EXPIRED` row and sets `loyaltyStars` to 0.
+ * Applies to all roles (members, walk-ins, etc.).
  */
 export async function expireLoyaltyStarsIfInactive(
   tx: Prisma.TransactionClient,
@@ -41,9 +42,9 @@ export async function expireLoyaltyStarsIfInactive(
 ): Promise<{ expired: boolean; pointsRemoved: number }> {
   const user = await tx.user.findUnique({
     where: { id: userId },
-    select: { id: true, role: true, loyaltyStars: true },
+    select: { id: true, loyaltyStars: true },
   });
-  if (!user || user.role !== "MEMBER") return { expired: false, pointsRemoved: 0 };
+  if (!user) return { expired: false, pointsRemoved: 0 };
 
   const balance = Math.max(0, user.loyaltyStars ?? 0);
   if (balance <= 0) return { expired: false, pointsRemoved: 0 };

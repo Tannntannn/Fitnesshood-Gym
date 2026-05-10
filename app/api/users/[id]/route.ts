@@ -1,11 +1,12 @@
-import { UserRole } from "@prisma/client";
+import { MembershipLifecycleStatus, UserRole } from "@prisma/client";
 import { addDays, isAfter } from "date-fns";
 import bcrypt from "bcryptjs";
-import { prisma } from "@/lib/prisma";
+import { prisma, PRISMA_INTERACTIVE_TX_OPTIONS } from "@/lib/prisma";
 import { membershipPenaltySyncFromRules, syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 import { nowInPH } from "@/lib/time";
 import { jsonNoStore } from "@/lib/http";
 import { requireAdminSession } from "@/lib/admin-auth";
+import { recomputeMemberLockInFields, safeSetUserLockInCycleAnchorAt } from "@/lib/lock-in-cycle";
 
 type Params = { params: { id: string } };
 
@@ -89,6 +90,10 @@ export async function PATCH(request: Request, { params }: Params) {
       membershipPenaltyNotes?: string | null;
       membershipPenaltyUseAuto?: boolean;
       remainingMonths?: number | null;
+      monthlyExpiryDate?: string | null;
+      daysLeft?: number | null;
+      membershipStatus?: MembershipLifecycleStatus | null;
+      lockInCycleAnchorAt?: string | null;
     };
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -167,6 +172,30 @@ export async function PATCH(request: Request, { params }: Params) {
           body.remainingMonths == null || !Number.isFinite(Number(body.remainingMonths))
             ? null
             : Math.max(0, Math.trunc(Number(body.remainingMonths)));
+      }
+      if (
+        (body.monthlyExpiryDate !== undefined || body.daysLeft !== undefined || body.membershipStatus !== undefined) &&
+        effectiveRole === "MEMBER"
+      ) {
+        if (currentlyFrozen) {
+          throw new Error("FREEZE_BLOCK:Cannot update monthly access dates while freeze is active.");
+        }
+        if (body.monthlyExpiryDate !== undefined) {
+          data.monthlyExpiryDate = body.monthlyExpiryDate ? new Date(body.monthlyExpiryDate) : null;
+        }
+        if (body.daysLeft !== undefined) {
+          data.daysLeft =
+            body.daysLeft == null || !Number.isFinite(Number(body.daysLeft))
+              ? null
+              : Math.trunc(Number(body.daysLeft));
+        }
+        if (body.membershipStatus !== undefined) {
+          data.membershipStatus = body.membershipStatus;
+        }
+      }
+      let lockInCycleAnchorPatch: Date | null | undefined = undefined;
+      if (body.lockInCycleAnchorAt !== undefined && effectiveRole === "MEMBER") {
+        lockInCycleAnchorPatch = body.lockInCycleAnchorAt ? new Date(body.lockInCycleAnchorAt) : null;
       }
 
       let roleChangedTo: UserRole | null = null;
@@ -256,6 +285,10 @@ export async function PATCH(request: Request, { params }: Params) {
         data,
       });
 
+      if (lockInCycleAnchorPatch !== undefined) {
+        await safeSetUserLockInCycleAnchorAt(tx, params.id, lockInCycleAnchorPatch);
+      }
+
       if (effectiveRole === "MEMBER") {
         const penaltyData: {
           membershipPenalty?: boolean;
@@ -307,9 +340,13 @@ export async function PATCH(request: Request, { params }: Params) {
         await syncMembershipPenaltyInTx(tx, params.id);
       }
 
+      if (body.lockInCycleAnchorAt !== undefined && effectiveRole === "MEMBER") {
+        await recomputeMemberLockInFields(tx, params.id);
+      }
+
       const fresh = await tx.user.findUnique({ where: { id: params.id } });
       return fresh ?? user;
-    });
+    }, PRISMA_INTERACTIVE_TX_OPTIONS);
     return jsonNoStore({ success: true, data: updated });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

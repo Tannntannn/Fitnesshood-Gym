@@ -1,5 +1,3 @@
-import type { UserRole } from "@prisma/client";
-
 /** ₱100 paid (after discount, final amount) = 1 loyalty point. */
 export const PESO_PER_LOYALTY_POINT = 100;
 
@@ -9,12 +7,13 @@ const DEFAULT_EARNING_TYPES = new Set([
   "ADD_ON",
   "OTHER",
   "LEGACY",
+  "WALK_IN",
 ]);
 
 /**
  * Comma-separated PaymentTransactionType values, e.g.
- * `MONTHLY_FEE,MEMBERSHIP_CONTRACT,ADD_ON,OTHER,LEGACY`
- * If unset, defaults include all of the above (excludes WALK_IN).
+ * `MONTHLY_FEE,MEMBERSHIP_CONTRACT,ADD_ON,OTHER,LEGACY,WALK_IN`
+ * If unset, defaults include all of the above (covers members, walk-ins, and other roles on qualifying payments).
  */
 export function getLoyaltyEarningTransactionTypes(): Set<string> {
   const raw = process.env.LOYALTY_EARNING_TRANSACTION_TYPES?.trim();
@@ -32,8 +31,8 @@ export function loyaltyPointsFromPesoAmount(finalAmountPaid: number): number {
   return Math.floor(finalAmountPaid / PESO_PER_LOYALTY_POINT);
 }
 
-export function memberPaymentEarnsLoyalty(role: UserRole, transactionType: string): boolean {
-  if (role !== "MEMBER") return false;
+/** Whether this payment type accrues loyalty for the paying user (any role: member, walk-in, etc.). */
+export function paymentEarnsLoyalty(transactionType: string): boolean {
   return getLoyaltyEarningTransactionTypes().has(transactionType.toUpperCase());
 }
 

@@ -3,6 +3,11 @@ import { getMembershipDaysLeft, getMembershipStatus, inferMembershipTier, type M
 import { membershipPenaltySyncFromRules } from "@/lib/membership-penalty";
 import { jsonNoStore } from "@/lib/http";
 import { requireAdminSession } from "@/lib/admin-auth";
+import {
+  effectiveLockInAnchorForDisplay,
+  monthsFromMembershipPaymentRow,
+  sumManualLockInMonthsAfterAnchor,
+} from "@/lib/lock-in-cycle";
 
 /** Vercel can otherwise cache GET handlers; this list must always reflect live DB. */
 export const dynamic = "force-dynamic";
@@ -61,22 +66,25 @@ export async function GET() {
             },
             select: {
               userId: true,
+              paidAt: true,
               grossAmount: true,
               amount: true,
               service: { select: { tier: true, monthlyRate: true } },
             },
           })
         : [];
-    const paidTierMonthsByUser = new Map<string, number>();
-    for (const row of fullPaidMembershipRows) {
-      const key = `${row.userId}::${row.service.tier.trim().toLowerCase()}`;
-      const monthlyRate = Number(row.service.monthlyRate);
-      const gross = Number(row.grossAmount ?? row.amount ?? 0);
-      const paidMonths =
-        monthlyRate > 0 && Number.isFinite(monthlyRate)
-          ? Math.max(1, Math.trunc(Math.round(gross / monthlyRate) || 1))
-          : 1;
-      paidTierMonthsByUser.set(key, (paidTierMonthsByUser.get(key) ?? 0) + paidMonths);
+    const manualLockRows =
+      memberIds.length > 0
+        ? await prisma.lockInManualEntry.findMany({
+            where: { userId: { in: memberIds } },
+            select: { userId: true, paidMonths: true, paidAt: true },
+          })
+        : [];
+    const manualByUserId = new Map<string, Array<{ paidMonths: number; paidAt: Date }>>();
+    for (const m of manualLockRows) {
+      const list = manualByUserId.get(m.userId) ?? [];
+      list.push({ paidMonths: m.paidMonths, paidAt: m.paidAt });
+      manualByUserId.set(m.userId, list);
     }
     const lastScanRows =
       memberIds.length > 0
@@ -119,11 +127,44 @@ export async function GET() {
         totalContractPrice: member.totalContractPrice != null ? String(member.totalContractPrice) : null,
         tier: inferredTier,
         tierLockInTemplateMonths: tierLockInTemplateByTier.get(inferredTier.trim().toLowerCase()) ?? null,
-        tierLockInPaidMonths: (() => {
+        ...(() => {
           const template = tierLockInTemplateByTier.get(inferredTier.trim().toLowerCase());
-          if (template == null || template <= 0) return null;
-          const paid = paidTierMonthsByUser.get(`${member.id}::${inferredTier.trim().toLowerCase()}`) ?? 0;
-          return Math.max(0, Math.min(template, paid));
+          if (template == null || template <= 0) {
+            return {
+              tierLockInPaidMonths: null as number | null,
+              tierLockInRosterStartAt: member.membershipStart ? member.membershipStart.toISOString() : null,
+            };
+          }
+          const tierLower = inferredTier.trim().toLowerCase();
+          const tierRows = fullPaidMembershipRows.filter(
+            (row) => row.userId === member.id && row.service.tier.trim().toLowerCase() === tierLower,
+          );
+          const anchor = effectiveLockInAnchorForDisplay(
+            (member as { lockInCycleAnchorAt?: Date | null }).lockInCycleAnchorAt,
+            template,
+            tierRows,
+          );
+          let sum = 0;
+          const rosterStartCandidates: Date[] = [];
+          if (member.membershipStart) rosterStartCandidates.push(member.membershipStart);
+          for (const row of tierRows) {
+            if (anchor && row.paidAt.getTime() <= anchor.getTime()) continue;
+            sum += monthsFromMembershipPaymentRow(row);
+            rosterStartCandidates.push(row.paidAt);
+          }
+          const manuals = manualByUserId.get(member.id) ?? [];
+          sum += sumManualLockInMonthsAfterAnchor(manuals, anchor);
+          for (const me of manuals) {
+            if (anchor && me.paidAt.getTime() <= anchor.getTime()) continue;
+            rosterStartCandidates.push(me.paidAt);
+          }
+          const paid = Math.max(0, Math.min(template, sum));
+          let tierLockInRosterStartAt: string | null = null;
+          if (rosterStartCandidates.length > 0) {
+            const earliest = rosterStartCandidates.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b));
+            tierLockInRosterStartAt = earliest.toISOString();
+          }
+          return { tierLockInPaidMonths: paid, tierLockInRosterStartAt };
         })(),
         daysLeft: getMembershipDaysLeft(accessExpiryForRoster(member)),
         membershipStatus: getMembershipStatus(accessExpiryForRoster(member)) as MembershipStatus,

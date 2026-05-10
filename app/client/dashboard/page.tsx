@@ -71,33 +71,29 @@ export default function ClientDashboardPage() {
         setUser(json.data.user);
         setAnnouncement(json.data.announcement ?? null);
 
-        if (json.data.user.role === "MEMBER") {
-          try {
-            const loyRes = await fetch("/api/client/loyalty?limit=5", { cache: "no-store" });
-            const loyJson = (await loyRes.json()) as {
-              success?: boolean;
-              data?: Array<{ id: string; points: number; reason: string | null; createdAt: string }>;
-              summary?: { currentPoints: number; totalEarned: unknown; totalUsed: unknown };
-            };
-            if (loyJson.success && loyJson.summary) {
-              setLoyalty({
-                currentPoints: loyJson.summary.currentPoints,
-                totalEarned: Number(loyJson.summary.totalEarned) || 0,
-                totalUsed: Number(loyJson.summary.totalUsed) || 0,
-                recent: (loyJson.data ?? []).map((r) => ({
-                  id: r.id,
-                  points: r.points,
-                  reason: (r.reason ?? "").trim() || "Entry",
-                  createdAt: r.createdAt,
-                })),
-              });
-            } else {
-              setLoyalty(null);
-            }
-          } catch {
+        try {
+          const loyRes = await fetch("/api/client/loyalty?limit=5", { cache: "no-store" });
+          const loyJson = (await loyRes.json()) as {
+            success?: boolean;
+            data?: Array<{ id: string; points: number; reason: string | null; createdAt: string }>;
+            summary?: { currentPoints: number; totalEarned: unknown; totalUsed: unknown };
+          };
+          if (loyJson.success && loyJson.summary) {
+            setLoyalty({
+              currentPoints: loyJson.summary.currentPoints,
+              totalEarned: Number(loyJson.summary.totalEarned) || 0,
+              totalUsed: Number(loyJson.summary.totalUsed) || 0,
+              recent: (loyJson.data ?? []).map((r) => ({
+                id: r.id,
+                points: r.points,
+                reason: (r.reason ?? "").trim() || "Entry",
+                createdAt: r.createdAt,
+              })),
+            });
+          } else {
             setLoyalty(null);
           }
-        } else {
+        } catch {
           setLoyalty(null);
         }
       } catch {
@@ -161,7 +157,7 @@ export default function ClientDashboardPage() {
   if (!user) {
     return (
       <div className="min-h-screen grid place-items-center bg-slate-50 p-4">
-        <p className="text-sm text-slate-500">Loading member dashboard...</p>
+        <p className="text-sm text-slate-500">Loading dashboard...</p>
       </div>
     );
   }
@@ -326,7 +322,7 @@ export default function ClientDashboardPage() {
             </div>
           </div>
 
-          {user.role === "MEMBER" && loyalty ? (
+          {loyalty ? (
             <div className="scroll-reveal delay-4 rounded-xl border border-amber-300/40 bg-amber-950/30 p-4 text-left text-sm text-slate-100">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-center gap-2 font-semibold text-amber-100">
@@ -368,7 +364,7 @@ export default function ClientDashboardPage() {
                 </ul>
               ) : (
                 <p className="mt-2 text-xs text-slate-400">
-                  No activity yet. Points accrue from qualifying payments (every ₱100 paid = 1 point).
+                  No activity yet. Points accrue from qualifying payments for every account type (every ₱100 paid = 1 point).
                 </p>
               )}
             </div>

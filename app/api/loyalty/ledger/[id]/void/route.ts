@@ -11,7 +11,7 @@ type Params = { params: { id: string } };
 
 export const dynamic = "force-dynamic";
 
-/** POST body: { reason: string } — marks entry voided and restores member balance (inverse of entry.points). */
+/** POST body: { reason: string } — marks entry voided and restores user balance (inverse of entry.points). */
 export async function POST(request: Request, { params }: Params) {
   const session = await requireAdminSession();
   if (!session) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
@@ -43,9 +43,9 @@ export async function POST(request: Request, { params }: Params) {
 
       const user = await tx.user.findUnique({
         where: { id: entry.userId },
-        select: { loyaltyStars: true, role: true },
+        select: { loyaltyStars: true },
       });
-      if (!user || user.role !== "MEMBER") throw new Error("Member not found.");
+      if (!user) throw new Error("User not found.");
 
       const reversalPoints = -entry.points;
       const nextBalance = Math.max(0, (user.loyaltyStars ?? 0) + reversalPoints);
@@ -120,7 +120,7 @@ export async function POST(request: Request, { params }: Params) {
     const clientErrors = [
       "This entry is already voided.",
       "Reversal rows cannot be voided.",
-      "Member not found.",
+      "User not found.",
     ];
     if (clientErrors.includes(message)) {
       return NextResponse.json({ success: false, error: message }, { status: 400 });

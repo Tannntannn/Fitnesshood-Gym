@@ -103,6 +103,8 @@ model User {
   membershipNotes  String?      @db.Text
   coachName      String?      @db.VarChar(120)
   monthlyExpiryDate DateTime?
+  // Lock-in cycle boundary: only payments/manual entries with paidAt > this count toward the current cycle.
+  lockInCycleAnchorAt DateTime?
   fullMembershipExpiry DateTime?
   daysLeft       Int?
   membershipStatus MembershipLifecycleStatus?

@@ -69,10 +69,10 @@ export async function GET(request: Request) {
       }),
       prisma.loyaltyLedger.count({ where }),
       prisma.user.findMany({
-        where: { role: "MEMBER" },
+        where: { loyaltyStars: { gt: 0 } },
         orderBy: [{ loyaltyStars: "desc" }, { lastName: "asc" }],
         take: 10,
-        select: { id: true, firstName: true, lastName: true, loyaltyStars: true },
+        select: { id: true, firstName: true, lastName: true, loyaltyStars: true, role: true },
       }),
       prisma.loyaltyLedger.groupBy({
         by: ["userId"],
@@ -127,9 +127,9 @@ export async function POST(request: Request) {
       await expireLoyaltyStarsIfInactive(tx, userId, nowInPH(), session.admin.email);
       const user = await tx.user.findUnique({
         where: { id: userId },
-        select: { id: true, role: true, loyaltyStars: true, firstName: true, lastName: true },
+        select: { id: true, loyaltyStars: true, firstName: true, lastName: true },
       });
-      if (!user || user.role !== "MEMBER") throw new Error("Member not found.");
+      if (!user) throw new Error("User not found.");
       const nextStars = Math.max(0, (user.loyaltyStars ?? 0) + points);
       const pointsEarned = points > 0 ? points : 0;
       const pointsDeducted = points < 0 ? Math.abs(points) : 0;

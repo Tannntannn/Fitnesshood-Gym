@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { addDays, addMonths } from "date-fns";
-import { prisma } from "@/lib/prisma";
+import { addDays, addMonths, isAfter } from "date-fns";
+import { prisma, PRISMA_INTERACTIVE_TX_OPTIONS } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
 import {
   computeDaysLeft,
@@ -15,10 +15,16 @@ import { nowInPH } from "@/lib/time";
 import {
   describePaymentLoyaltySource,
   loyaltyPointsFromPesoAmount,
-  memberPaymentEarnsLoyalty,
+  paymentEarnsLoyalty,
 } from "@/lib/loyalty-earn";
 import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
 import { expireLoyaltyStarsIfInactive } from "@/lib/loyalty-expiration";
+import {
+  ensureLockInCycleAnchorAndLoadMembershipPayments,
+  monthsFromMembershipPaymentRow,
+  safeSetUserLockInCycleAnchorAt,
+  type LockInMembershipPaymentRow,
+} from "@/lib/lock-in-cycle";
 
 type SplitInput = { method: string; amount: number; reference?: string | null };
 type PaymentDiscountTypeValue = "NONE" | "PERCENT" | "FIXED";
@@ -336,34 +342,59 @@ export async function POST(request: Request) {
         const skipMonthlyExtensionForUnsettledSameTier =
           member.role === "MEMBER" && sameTierAsMember && existingMemberBalance > 0;
         const lockInTemplate = Math.max(0, Math.trunc(Number(service.contractMonths) || 0));
-        const fullPaidSameTierRows =
+        const { activeAnchor: lockInAnchor, rows: fullPaidSameTierRows } =
           lockInTemplate > 0 && member.role === "MEMBER"
-            ? await tx.payment.findMany({
-                where: {
-                  userId: member.id,
-                  transactionType: "MONTHLY_FEE",
-                  collectionStatus: "FULLY_PAID",
-                  service: {
-                    name: "Membership",
-                    tier: service.tier,
-                  },
-                },
-                select: {
-                  grossAmount: true,
-                  amount: true,
-                  service: { select: { monthlyRate: true } },
-                },
-              })
-            : [];
-        const fullPaidSameTierMonths = fullPaidSameTierRows.reduce((sum, row) => {
-          const monthlyRate = Number(row.service.monthlyRate);
-          const gross = Number(row.grossAmount ?? row.amount ?? 0);
-          const paidMonths =
-            monthlyRate > 0 && Number.isFinite(monthlyRate)
-              ? Math.max(1, Math.trunc(Math.round(gross / monthlyRate) || 1))
-              : 1;
-          return sum + paidMonths;
-        }, 0);
+            ? await ensureLockInCycleAnchorAndLoadMembershipPayments(tx, member.id, service.tier, lockInTemplate)
+            : { activeAnchor: null as Date | null, rows: [] as LockInMembershipPaymentRow[] };
+        const rowsAfterAnchor = fullPaidSameTierRows.filter(
+          (r) => !lockInAnchor || r.paidAt.getTime() > lockInAnchor.getTime(),
+        );
+        const rowsExclCurrent = fullPaidSameTierRows.filter((r) => r.id !== payment.id);
+        const sumMonthsExclCurrent = rowsExclCurrent.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
+        const currentRow = fullPaidSameTierRows.find((r) => r.id === payment.id);
+        const currentPaymentLockInMonths = currentRow
+          ? monthsFromMembershipPaymentRow(currentRow)
+          : Math.max(
+              1,
+              monthlyRateNum > 0 && Number.isFinite(monthlyRateNum)
+                ? Math.trunc(Math.round(grossAmountNumber / monthlyRateNum) || 1)
+                : 1,
+            );
+        let fullPaidSameTierMonths = rowsAfterAnchor.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
+        let priorMonthsInCurrentCycleExclCurrent = 0;
+        if (lockInTemplate > 0 && member.role === "MEMBER") {
+          priorMonthsInCurrentCycleExclCurrent = rowsExclCurrent
+            .filter((r) => !lockInAnchor || r.paidAt.getTime() > lockInAnchor.getTime())
+            .reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
+          const manualPriorInCycle = await tx.lockInManualEntry.aggregate({
+            where: {
+              userId: member.id,
+              paidAt: {
+                lt: payment.paidAt,
+                ...(lockInAnchor ? { gt: lockInAnchor } : {}),
+              },
+            },
+            _sum: { paidMonths: true },
+          });
+          priorMonthsInCurrentCycleExclCurrent += Math.max(0, Math.trunc(Number(manualPriorInCycle._sum.paidMonths) || 0));
+          const manualSum = await tx.lockInManualEntry.aggregate({
+            where: {
+              userId: member.id,
+              ...(lockInAnchor ? { paidAt: { gt: lockInAnchor } } : {}),
+            },
+            _sum: { paidMonths: true },
+          });
+          fullPaidSameTierMonths += Math.max(0, Math.trunc(Number(manualSum._sum.paidMonths) || 0));
+        }
+        const isNewLockInCycleStart =
+          lockInTemplate > 0 &&
+          member.role === "MEMBER" &&
+          collectionStatus === "FULLY_PAID" &&
+          !settleExistingBalanceOnly &&
+          sameTierAsMember &&
+          monthsCharged > 0 &&
+          sumMonthsExclCurrent >= lockInTemplate &&
+          priorMonthsInCurrentCycleExclCurrent === 0;
         const lockInPaidMonths = lockInTemplate > 0 ? Math.min(lockInTemplate, fullPaidSameTierMonths) : 0;
         const lockInRemaining = Math.max(lockInTemplate - lockInPaidMonths, 0);
         lockInPaidMonthsForSummary = lockInTemplate > 0 ? lockInPaidMonths : null;
@@ -375,6 +406,7 @@ export async function POST(request: Request) {
         const fullMembershipExpiryAfterLockIn =
           lockInRemaining > 0 ? addMonths(now, lockInRemaining) : null;
         const lockInLabel = lockInRemaining > 0 ? `${lockInRemaining} Months Lock-In Left` : "No Lock-in";
+        const lockInCycleJustCompleted = lockInTemplate > 0 && lockInRemaining === 0;
 
         if (settleExistingBalanceOnly) {
           const newBalance = Math.max(0, existingMemberBalance - Number(amountNumber));
@@ -404,9 +436,15 @@ export async function POST(request: Request) {
         } else {
           let monthlyExpiryDate: Date | null = member.monthlyExpiryDate;
           if (!skipMonthlyExtensionForUnsettledSameTier) {
-            let monthlyExpiryCursor: Date | null = member.monthlyExpiryDate;
+            const rollingRef: Date | null = member.monthlyExpiryDate ?? member.membershipExpiry ?? null;
+            const restartRollingFromPayment =
+              isNewLockInCycleStart ||
+              rollingRef == null ||
+              !isAfter(rollingRef, now);
+            let monthlyExpiryCursor: Date | null = restartRollingFromPayment ? null : rollingRef;
+            const cycleDays = Number(service.accessCycleDays) || 30;
             for (let i = 0; i < monthsCharged; i++) {
-              monthlyExpiryCursor = extendMonthlyExpiry(monthlyExpiryCursor, Number(service.accessCycleDays) || 30);
+              monthlyExpiryCursor = extendMonthlyExpiry(monthlyExpiryCursor, cycleDays);
             }
             monthlyExpiryDate = monthlyExpiryCursor as Date;
           }
@@ -436,6 +474,9 @@ export async function POST(request: Request) {
               ...(member.membershipStart ? {} : { membershipStart: nowInPH() }),
             },
           });
+        }
+        if (lockInCycleJustCompleted) {
+          await safeSetUserLockInCycleAnchorAt(tx, member.id, payment.paidAt);
         }
       } else if (member.role === "MEMBER" && isMonthlyFeePayment && !isMembershipService) {
         const monthlyExpiryDate = extendMonthlyExpiry(member.monthlyExpiryDate);
@@ -476,8 +517,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const loyaltyPointsEarned =
-        memberPaymentEarnsLoyalty(member.role, transactionType) ? loyaltyPointsFromPesoAmount(amountNumber) : 0;
+      const loyaltyPointsEarned = paymentEarnsLoyalty(transactionType) ? loyaltyPointsFromPesoAmount(amountNumber) : 0;
       if (loyaltyPointsEarned > 0) {
         await expireLoyaltyStarsIfInactive(tx, member.id, nowInPH(), session.admin.email);
         const starsAfterInactivity = await tx.user.findUnique({
@@ -519,7 +559,7 @@ export async function POST(request: Request) {
         payment,
         updatedMember: { ...updatedMember, lockInPaidMonths: lockInPaidMonthsForSummary },
       };
-    });
+    }, PRISMA_INTERACTIVE_TX_OPTIONS);
 
     return NextResponse.json({ success: true, data: result });
   } catch (error) {

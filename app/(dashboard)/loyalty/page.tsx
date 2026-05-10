@@ -19,8 +19,10 @@ import {
   LOYALTY_VOID_REVERSAL_REASON,
   parseLoyaltyVoidAdminReason,
 } from "@/lib/loyalty-void";
+import { formatRoleLabel } from "@/lib/role-labels";
+import type { UserRole } from "@prisma/client";
 
-type MemberPick = { id: string; firstName: string; lastName: string };
+type UserPick = { id: string; firstName: string; lastName: string; role: UserRole };
 
 type LedgerRow = {
   id: string;
@@ -42,7 +44,7 @@ type LedgerRow = {
   createdAt: string;
   user: { firstName: string; lastName: string };
 };
-type RankingRow = { id: string; firstName: string; lastName: string; loyaltyStars: number | null };
+type RankingRow = { id: string; firstName: string; lastName: string; loyaltyStars: number | null; role?: string };
 type ClaimRow = {
   id: string;
   userId: string;
@@ -91,10 +93,10 @@ export default function LoyaltyPage() {
   const [summary, setSummary] = useState({ totalIssued: 0, totalClaimed: 0 });
   const [claimForm, setClaimForm] = useState({ userId: "", rewardName: "", pointsRequired: "", notes: "" });
   const [adjustSearch, setAdjustSearch] = useState("");
-  const [adjustCandidates, setAdjustCandidates] = useState<MemberPick[]>([]);
+  const [adjustCandidates, setAdjustCandidates] = useState<UserPick[]>([]);
   const [adjustPickedLabel, setAdjustPickedLabel] = useState("");
   const [claimSearch, setClaimSearch] = useState("");
-  const [claimCandidates, setClaimCandidates] = useState<MemberPick[]>([]);
+  const [claimCandidates, setClaimCandidates] = useState<UserPick[]>([]);
   const [claimPickedLabel, setClaimPickedLabel] = useState("");
   const [formNotice, setFormNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [voiding, setVoiding] = useState<LedgerRow | null>(null);
@@ -151,9 +153,18 @@ export default function LoyaltyPage() {
     }
     adjustSearchTimerRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/attendance/manual-search?q=${encodeURIComponent(q)}&role=MEMBER`);
-        const json = (await res.json()) as { success?: boolean; data?: MemberPick[] };
-        setAdjustCandidates(json.success ? (json.data ?? []).map((r) => ({ id: r.id, firstName: r.firstName, lastName: r.lastName })) : []);
+        const res = await fetch(`/api/attendance/manual-search?q=${encodeURIComponent(q)}&limit=30`);
+        const json = (await res.json()) as { success?: boolean; data?: Array<UserPick & { canScan?: boolean }> };
+        setAdjustCandidates(
+          json.success
+            ? (json.data ?? []).map((r) => ({
+                id: r.id,
+                firstName: r.firstName,
+                lastName: r.lastName,
+                role: r.role,
+              }))
+            : [],
+        );
       } catch {
         setAdjustCandidates([]);
       }
@@ -172,9 +183,18 @@ export default function LoyaltyPage() {
     }
     claimSearchTimerRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/attendance/manual-search?q=${encodeURIComponent(q)}&role=MEMBER`);
-        const json = (await res.json()) as { success?: boolean; data?: MemberPick[] };
-        setClaimCandidates(json.success ? (json.data ?? []).map((r) => ({ id: r.id, firstName: r.firstName, lastName: r.lastName })) : []);
+        const res = await fetch(`/api/attendance/manual-search?q=${encodeURIComponent(q)}&limit=30`);
+        const json = (await res.json()) as { success?: boolean; data?: Array<UserPick & { canScan?: boolean }> };
+        setClaimCandidates(
+          json.success
+            ? (json.data ?? []).map((r) => ({
+                id: r.id,
+                firstName: r.firstName,
+                lastName: r.lastName,
+                role: r.role,
+              }))
+            : [],
+        );
       } catch {
         setClaimCandidates([]);
       }
@@ -201,9 +221,9 @@ export default function LoyaltyPage() {
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Loyalty points</h1>
           <p className="mt-1 text-xs text-slate-600">
-            Earning rule: every ₱100 paid (final amount) = 1 point for members. Optional env{" "}
+            Earning rule: every ₱100 paid (final amount) = 1 point for the paying user (members, walk-ins, and other roles on eligible payment types). Optional env{" "}
             <code className="rounded bg-slate-100 px-1">LOYALTY_EARNING_TRANSACTION_TYPES</code> (comma-separated types, e.g.{" "}
-            <code className="rounded bg-slate-100 px-1">MONTHLY_FEE,ADD_ON,OTHER</code>) limits which payment types accrue points.
+            <code className="rounded bg-slate-100 px-1">MONTHLY_FEE,WALK_IN,ADD_ON,OTHER</code>) limits which payment types accrue points.
             Balances reset to 0 after {LOYALTY_INACTIVITY_EXPIRE_MONTHS} months with no earn or redemption (ledger shows{" "}
             <span className="font-mono text-[10px]">{LOYALTY_POINTS_EXPIRED_REASON}</span>). Schedule{" "}
             <code className="rounded bg-slate-100 px-1">GET /api/cron/loyalty-expire</code> daily (see <code className="rounded bg-slate-100 px-1">vercel.json</code> on Vercel, or call manually with{" "}
@@ -254,13 +274,13 @@ export default function LoyaltyPage() {
       <Card className="surface-card space-y-3 p-3 sm:p-5">
         <h2 className="text-sm font-semibold text-slate-900">Manual Add / Deduct / Claim Approval</h2>
         <p className="text-xs text-slate-500">
-          Search by member name, click a match to select, then enter points. Or paste a User ID below if you already have it.
+          Search by name (all registered users: members, walk-ins, etc.), click a match to select, then enter points. Or paste a User ID below if you already have it.
         </p>
         <div className="space-y-2">
           <Input
             value={adjustSearch}
             onChange={(e) => setAdjustSearch(e.target.value)}
-            placeholder="Search member by name (type 2+ letters)"
+            placeholder="Search user by name (type 2+ letters)"
             className="max-w-xl"
           />
           {adjustPickedLabel || form.userId ? (
@@ -280,7 +300,7 @@ export default function LoyaltyPage() {
                   setAdjustCandidates([]);
                 }}
               >
-                Clear member
+                Clear selection
               </Button>
             </div>
           ) : null}
@@ -294,10 +314,11 @@ export default function LoyaltyPage() {
                   className="h-8 border-slate-300 px-2 text-[11px]"
                   onClick={() => {
                     setForm((prev) => ({ ...prev, userId: c.id }));
-                    setAdjustPickedLabel(`${c.firstName} ${c.lastName}`);
+                    setAdjustPickedLabel(`${c.firstName} ${c.lastName} (${formatRoleLabel(c.role)})`);
                   }}
                 >
                   {c.firstName} {c.lastName}
+                  <span className="ml-1 text-[10px] font-normal text-slate-500">· {formatRoleLabel(c.role)}</span>
                 </Button>
               ))}
             </div>
@@ -335,7 +356,7 @@ export default function LoyaltyPage() {
             onClick={async () => {
               const uid = form.userId.trim();
               if (!uid) {
-                setFormNotice({ type: "error", message: "Select a member by name or paste a User ID." });
+                setFormNotice({ type: "error", message: "Select a user by name or paste a User ID." });
                 setTimeout(() => setFormNotice(null), 3200);
                 return;
               }
@@ -372,12 +393,12 @@ export default function LoyaltyPage() {
 
       <Card className="surface-card space-y-3 p-3 sm:p-5">
         <h2 className="text-sm font-semibold text-slate-900">Claim Requests (Approval Workflow)</h2>
-        <p className="text-xs text-slate-500">Search by name and select a member, or paste User ID.</p>
+        <p className="text-xs text-slate-500">Search by name (any registered user) and select, or paste User ID.</p>
         <div className="space-y-2">
           <Input
             value={claimSearch}
             onChange={(e) => setClaimSearch(e.target.value)}
-            placeholder="Search member by name"
+            placeholder="Search user by name (type 2+ letters)"
             className="max-w-xl"
           />
           {claimPickedLabel || claimForm.userId ? (
@@ -397,7 +418,7 @@ export default function LoyaltyPage() {
                   setClaimCandidates([]);
                 }}
               >
-                Clear member
+                Clear selection
               </Button>
             </div>
           ) : null}
@@ -411,10 +432,11 @@ export default function LoyaltyPage() {
                   className="h-8 border-slate-300 px-2 text-[11px]"
                   onClick={() => {
                     setClaimForm((p) => ({ ...p, userId: c.id }));
-                    setClaimPickedLabel(`${c.firstName} ${c.lastName}`);
+                    setClaimPickedLabel(`${c.firstName} ${c.lastName} (${formatRoleLabel(c.role)})`);
                   }}
                 >
                   {c.firstName} {c.lastName}
+                  <span className="ml-1 text-[10px] font-normal text-slate-500">· {formatRoleLabel(c.role)}</span>
                 </Button>
               ))}
             </div>
@@ -440,7 +462,7 @@ export default function LoyaltyPage() {
             onClick={async () => {
               const uid = claimForm.userId.trim();
               if (!uid) {
-                setFormNotice({ type: "error", message: "Select a member by name or paste a User ID for the claim." });
+                setFormNotice({ type: "error", message: "Select a user by name or paste a User ID for the claim." });
                 setTimeout(() => setFormNotice(null), 3200);
                 return;
               }
@@ -551,7 +573,7 @@ export default function LoyaltyPage() {
       <Card className="surface-card p-3 sm:p-5">
         <div className="mb-3 flex items-center gap-2">
           <Trophy className="h-5 w-5 text-amber-500" aria-hidden />
-          <h2 className="text-sm font-semibold text-slate-900">Top member rankings</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Top point balances</h2>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {rankings.map((row, i) => {
@@ -589,7 +611,7 @@ export default function LoyaltyPage() {
             );
           })}
         </div>
-        {rankings.length === 0 ? <p className="text-xs text-slate-500">No members yet.</p> : null}
+        {rankings.length === 0 ? <p className="text-xs text-slate-500">No point balances yet.</p> : null}
       </Card>
 
       <Card className="surface-card p-3 sm:p-5">

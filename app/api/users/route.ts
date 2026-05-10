@@ -160,7 +160,7 @@ export async function POST(request: Request) {
             monthlyFeeLabel: body.role === "MEMBER" ? body.monthlyFeeLabel?.trim() || null : null,
             membershipFeeLabel: body.role === "MEMBER" ? body.membershipFeeLabel?.trim() || null : null,
             gracePeriodEnd: body.role === "MEMBER" && body.gracePeriodEnd ? new Date(body.gracePeriodEnd) : null,
-            freezeStatus: body.role === "MEMBER" ? body.freezeStatus?.trim() || null : null,
+            freezeStatus: null,
             membershipNotes: body.role === "MEMBER" ? body.membershipNotes?.trim() || null : null,
           },
         });

@@ -57,7 +57,6 @@ export default function RegisterPage() {
   const [monthlyFeeLabel, setMonthlyFeeLabel] = useState("₱1,000.00");
   const [membershipFeeLabel, setMembershipFeeLabel] = useState("₱800.00");
   const [gracePeriodEnd, setGracePeriodEnd] = useState("");
-  const [freezeStatus, setFreezeStatus] = useState("");
   const [membershipNotes, setMembershipNotes] = useState("");
   const [coachName, setCoachName] = useState("");
   const [coaches, setCoaches] = useState<CoachRow[]>([]);
@@ -124,7 +123,6 @@ export default function RegisterPage() {
         monthlyFeeLabel: role === "MEMBER" ? monthlyFeeLabel : null,
         membershipFeeLabel: role === "MEMBER" ? membershipFeeLabel : null,
         gracePeriodEnd: role === "MEMBER" ? gracePeriodEnd || null : null,
-        freezeStatus: role === "MEMBER" ? freezeStatus || null : null,
         membershipNotes: role === "MEMBER" ? membershipNotes || null : null,
         coachName: coachName || null,
       }),
@@ -146,7 +144,6 @@ export default function RegisterPage() {
     setMonthlyFeeLabel(tierPresets.Silver.monthlyFeeLabel);
     setMembershipFeeLabel(tierPresets.Silver.membershipFeeLabel);
     setGracePeriodEnd("");
-    setFreezeStatus("");
     setMembershipNotes("");
     setCoachName("");
   };
@@ -269,9 +266,9 @@ export default function RegisterPage() {
                 <Label htmlFor="grace-end">Grace Period End</Label>
                 <Input id="grace-end" type="date" value={gracePeriodEnd} onChange={(e) => setGracePeriodEnd(e.target.value)} />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="freeze-status">Freeze Status</Label>
-                <Input id="freeze-status" value={freezeStatus} onChange={(e) => setFreezeStatus(e.target.value)} />
+              <div className="space-y-1.5 sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Membership <span className="font-medium text-slate-800">freeze</span> is not set here — use{" "}
+                <span className="font-medium text-slate-800">Members Management → Edit</span> (or the Freeze members tab) after registration.
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="membership-notes">Membership Notes</Label>

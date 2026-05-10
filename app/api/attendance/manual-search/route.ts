@@ -13,6 +13,7 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const query = (params.get("q") ?? "").trim();
     const role = (params.get("role") ?? "").trim();
+    const take = Math.min(50, Math.max(1, Math.trunc(Number(params.get("limit") ?? 12) || 12)));
     if (query.length < 2) {
       return NextResponse.json({ success: true, data: [] });
     }
@@ -26,7 +27,7 @@ export async function GET(request: Request) {
         ],
       },
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-      take: 12,
+      take,
       select: {
         id: true,
         firstName: true,
@@ -62,7 +63,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, data });
   } catch (error) {
     return NextResponse.json(
-      { success: false, error: "Failed to search members.", details: error instanceof Error ? error.message : "Unknown error" },
+      { success: false, error: "Failed to search users.", details: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 },
     );
   }

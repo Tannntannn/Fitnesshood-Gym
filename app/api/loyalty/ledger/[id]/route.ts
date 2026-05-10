@@ -126,7 +126,7 @@ export async function DELETE(request: Request, { params }: Params) {
         where: { id: entry.userId },
         select: { loyaltyStars: true },
       });
-      if (!user) throw new Error("Member not found.");
+      if (!user) throw new Error("User not found.");
 
       let nextStars = user.loyaltyStars ?? 0;
 
@@ -192,7 +192,7 @@ export async function DELETE(request: Request, { params }: Params) {
     }
     if (
       message.startsWith("Reversal rows cannot") ||
-      message === "Member not found."
+      message === "User not found."
     ) {
       return NextResponse.json({ success: false, error: message }, { status: 400 });
     }

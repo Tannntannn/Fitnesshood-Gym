@@ -12,6 +12,7 @@ import {
 } from "@/lib/payment";
 import { nowInPH } from "@/lib/time";
 import { syncMembershipPenaltyInTx } from "@/lib/membership-penalty";
+import { recomputeMemberLockInFields } from "@/lib/lock-in-cycle";
 
 type Params = { params: { id: string } };
 
@@ -277,6 +278,13 @@ export async function DELETE(_: Request, { params }: Params) {
         existing.service.tier !== "Bronze"
       ) {
         await recomputeMemberMembership(tx, existing.userId);
+      }
+      if (
+        existing.user.role === "MEMBER" &&
+        existing.transactionType === "MONTHLY_FEE" &&
+        existing.service.name.trim() === "Membership"
+      ) {
+        await recomputeMemberLockInFields(tx, existing.userId);
       }
       if (existing.user.role === "MEMBER") {
         await syncMembershipPenaltyInTx(tx, existing.userId);
