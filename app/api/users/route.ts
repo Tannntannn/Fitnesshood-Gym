@@ -155,7 +155,12 @@ export async function POST(request: Request) {
             membershipTierExpiry: membershipExpiry,
             membershipJoinedStart: body.role === "MEMBER" ? now : null,
             membershipJoinedExpiry: body.role === "MEMBER" ? addDays(now, 365) : null,
-            membershipTier: body.role === "MEMBER" ? body.membershipTier?.trim() || null : null,
+            membershipTier:
+              body.role === "MEMBER"
+                ? body.membershipTier?.trim() || null
+                : body.role === "NON_MEMBER"
+                  ? "Bronze"
+                  : null,
             lockInLabel: body.role === "MEMBER" ? body.lockInLabel?.trim() || null : null,
             monthlyFeeLabel: body.role === "MEMBER" ? body.monthlyFeeLabel?.trim() || null : null,
             membershipFeeLabel: body.role === "MEMBER" ? body.membershipFeeLabel?.trim() || null : null,

@@ -208,24 +208,23 @@ export async function PATCH(request: Request, { params }: Params) {
           throw new Error("Email is required.");
         }
 
-        if (body.role === "MEMBER" && !existing.membershipStart) {
-          data.membershipStart = now;
-          data.membershipExpiry = addDays(now, 30);
-          data.membershipTierStart = now;
-          data.membershipTierExpiry = addDays(now, 30);
-          data.membershipJoinedStart = now;
-          data.membershipJoinedExpiry = addDays(now, 365);
-        }
-
         // Non-members and walk-ins should not carry membership dates.
         if (body.role !== "MEMBER") {
           data.membershipStart = null;
           data.membershipExpiry = null;
-          data.membershipTier = null;
+          data.membershipTier = body.role === "NON_MEMBER" ? "Bronze" : null;
           data.lockInLabel = null;
           data.monthlyFeeLabel = null;
           data.membershipFeeLabel = null;
           data.gracePeriodEnd = null;
+          data.fullMembershipExpiry = null;
+          data.monthlyExpiryDate = null;
+          data.daysLeft = null;
+          data.membershipStatus = null;
+          data.monthsPaid = null;
+          data.remainingMonths = null;
+          data.totalContractPrice = null;
+          data.remainingBalance = null;
           data.freezeStatus = null;
           data.freezeStartedAt = null;
           data.freezeEndsAt = null;

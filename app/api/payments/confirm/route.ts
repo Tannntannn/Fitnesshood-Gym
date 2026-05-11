@@ -337,7 +337,13 @@ export async function POST(request: Request) {
         const isBronzeTier = tierLower === BRONZE_TIER;
         const monthsCharged = isBronzeTier
           ? Math.max(1, Math.min(36, monthsFromGross))
-          : Math.max(1, Math.min(MAX_MEMBERSHIP_PAY_NOW_MONTHS, requestedPaymentMonths || monthsFromGross));
+          : Math.max(
+              1,
+              Math.min(
+                MAX_MEMBERSHIP_PAY_NOW_MONTHS,
+                requestedPaymentMonths > 0 ? requestedPaymentMonths : 1,
+              ),
+            );
         membershipExpectedDue = Math.max(0, monthsCharged * Math.max(0, monthlyRateNum));
         const skipMonthlyExtensionForUnsettledSameTier =
           member.role === "MEMBER" && sameTierAsMember && existingMemberBalance > 0;

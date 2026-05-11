@@ -31,7 +31,7 @@ export async function GET() {
   if (!session) return jsonNoStore({ success: false, error: "Unauthorized" }, { status: 401 });
   try {
     const members = await prisma.user.findMany({
-      where: { role: "MEMBER" },
+      where: { role: { in: ["MEMBER", "NON_MEMBER"] } },
       orderBy: { lastName: "asc" },
       include: {
         addOnSubscriptions: {
@@ -115,13 +115,16 @@ export async function GET() {
 
     const data = members.map((member) => {
       const paid = contractPaidToDateAmount(member.totalContractPrice, member.remainingBalance);
-      const inferredTier = inferMembershipTier({
-        membershipTier: member.membershipTier,
-        lockInLabel: member.lockInLabel,
-        monthlyFeeLabel: member.monthlyFeeLabel,
-        membershipFeeLabel: member.membershipFeeLabel,
-        membershipNotes: member.membershipNotes,
-      });
+      const inferredTier =
+        member.role === "NON_MEMBER"
+          ? "Bronze"
+          : inferMembershipTier({
+              membershipTier: member.membershipTier,
+              lockInLabel: member.lockInLabel,
+              monthlyFeeLabel: member.monthlyFeeLabel,
+              membershipFeeLabel: member.membershipFeeLabel,
+              membershipNotes: member.membershipNotes,
+            });
       return {
         ...member,
         totalContractPrice: member.totalContractPrice != null ? String(member.totalContractPrice) : null,

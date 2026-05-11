@@ -46,6 +46,14 @@ type PaymentRow = {
   service: { name: string; tier: string };
 };
 
+/** Legacy safety: treat MEMBER + Bronze tier as display-level NON_MEMBER in All Users cards. */
+function effectiveUserRoleForCards(user: Pick<UserRow, "role" | "membershipTier">): UserRole {
+  if (user.role === "MEMBER" && (user.membershipTier ?? "").trim().toLowerCase() === "bronze") {
+    return "NON_MEMBER";
+  }
+  return user.role;
+}
+
 function formatPaymentReference(row: PaymentRow): string {
   if (row.paymentMethod === "SPLIT" && row.splitPayments?.length) {
     return row.splitPayments
@@ -142,7 +150,8 @@ export default function UsersPage() {
     () =>
       users.filter((user) => {
         const name = `${user.firstName} ${user.lastName}`.toLowerCase();
-        return name.includes(search.toLowerCase()) && (role === "ALL" || user.role === role);
+        const effectiveRole = effectiveUserRoleForCards(user);
+        return name.includes(search.toLowerCase()) && (role === "ALL" || effectiveRole === role);
       }),
     [users, search, role],
   );
@@ -150,7 +159,7 @@ export default function UsersPage() {
   const groupedUsers = useMemo(() => {
     return roleSections.reduce<Record<UserRole, UserRow[]>>(
       (acc, section) => {
-        acc[section.role] = filtered.filter((u) => u.role === section.role);
+        acc[section.role] = filtered.filter((u) => effectiveUserRoleForCards(u) === section.role);
         return acc;
       },
       {
