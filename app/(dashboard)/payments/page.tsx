@@ -80,6 +80,14 @@ type ConfirmResult = {
   };
 };
 
+type LockInSummarySnapshot = {
+  templateMonths: number;
+  paidMonthsCapped: number;
+  remainingMonths: number;
+  paymentMonthsTotal: number;
+  manualMonthsTotal: number;
+};
+
 const methodOptions = ["CASH", "GCASH", "CARD", "BANK_TRANSFER", "MAYA", "OTHER"] as const;
 
 type EditableTransaction = {
@@ -552,6 +560,7 @@ export default function PaymentsPage() {
   const [savingTransactionEdit, setSavingTransactionEdit] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<ConfirmResult | null>(null);
+  const [lockInSummary, setLockInSummary] = useState<LockInSummarySnapshot | null>(null);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [duplicateSaveOpen, setDuplicateSaveOpen] = useState(false);
   const [pendingVoidPayment, setPendingVoidPayment] = useState<PaymentRow | null>(null);
@@ -652,6 +661,47 @@ export default function PaymentsPage() {
     // load() reads other state but is intentionally only re-run when the date changes here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paymentRecordsDate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLatestLockInSummary = async () => {
+      const currentMember = members.find((member) => member.id === memberId) ?? null;
+      if (!success || !currentMember?.id || currentMember.role !== "MEMBER") {
+        setLockInSummary(null);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/users/${currentMember.id}/lock-in-entries`, { cache: "no-store" });
+        const json = (await res.json()) as {
+          success?: boolean;
+          data?: {
+            templateMonths?: number;
+            paidMonthsCapped?: number;
+            remainingMonths?: number;
+            paymentMonthsTotal?: number;
+            manualMonthsTotal?: number;
+          };
+        };
+        if (!cancelled && json.success && json.data) {
+          setLockInSummary({
+            templateMonths: Math.max(0, Math.trunc(Number(json.data.templateMonths) || 0)),
+            paidMonthsCapped: Math.max(0, Math.trunc(Number(json.data.paidMonthsCapped) || 0)),
+            remainingMonths: Math.max(0, Math.trunc(Number(json.data.remainingMonths) || 0)),
+            paymentMonthsTotal: Math.max(0, Math.trunc(Number(json.data.paymentMonthsTotal) || 0)),
+            manualMonthsTotal: Math.max(0, Math.trunc(Number(json.data.manualMonthsTotal) || 0)),
+          });
+        } else if (!cancelled) {
+          setLockInSummary(null);
+        }
+      } catch {
+        if (!cancelled) setLockInSummary(null);
+      }
+    };
+    void loadLatestLockInSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [success, memberId, members]);
 
   /**
    * Export the currently visible (filtered + sorted) payment history to .xlsx.
@@ -2444,9 +2494,19 @@ export default function PaymentsPage() {
                           const tierService = services.find(
                             (s) => s.name === "Membership" && s.tier.trim().toLowerCase() === tierKey,
                           );
-                          const template = Math.max(0, Math.trunc(Number(tierService?.contractMonths ?? 0) || 0));
+                          const template = Math.max(
+                            0,
+                            Math.trunc(
+                              Number(lockInSummary?.templateMonths ?? tierService?.contractMonths ?? 0) || 0,
+                            ),
+                          );
                           const paidFromHistory =
-                            success.updatedMember.lockInPaidMonths == null
+                            lockInSummary?.paidMonthsCapped != null
+                              ? Math.max(
+                                  0,
+                                  Math.min(template, Math.trunc(Number(lockInSummary.paidMonthsCapped) || 0)),
+                                )
+                              : success.updatedMember.lockInPaidMonths == null
                               ? null
                               : Math.max(
                                   0,
@@ -2454,13 +2514,23 @@ export default function PaymentsPage() {
                                 );
                           const left = Math.max(
                             0,
-                            Math.min(template, Math.trunc(Number(success.updatedMember.remainingMonths ?? template) || 0)),
+                            Math.min(
+                              template,
+                              Math.trunc(
+                                Number(lockInSummary?.remainingMonths ?? success.updatedMember.remainingMonths ?? template) || 0,
+                              ),
+                            ),
                           );
                           const paid = paidFromHistory ?? Math.max(0, template - left);
                           if (template <= 0) return success.updatedMember.lockInLabel ?? "No lock-in";
                           return `${paid}/${template} mo paid`;
                         })()}
                       </dd>
+                      {lockInSummary ? (
+                        <p className="mt-1 text-[10px] text-slate-500">
+                          Breakdown: POS {lockInSummary.paymentMonthsTotal} mo + Manual {lockInSummary.manualMonthsTotal} mo
+                        </p>
+                      ) : null}
                       {success.updatedMember.lockInLabel ? (
                         <p className="mt-1 text-[10px] text-slate-500">Raw label: {success.updatedMember.lockInLabel}</p>
                       ) : null}
@@ -2483,7 +2553,9 @@ export default function PaymentsPage() {
                             </div>
                             <div>
                               <span className="text-amber-800/90">Remaining mo.</span>
-                              <p className="font-semibold tabular-nums">{success.updatedMember.remainingMonths ?? "—"}</p>
+                              <p className="font-semibold tabular-nums">
+                                {lockInSummary?.remainingMonths ?? success.updatedMember.remainingMonths ?? "—"}
+                              </p>
                             </div>
                             <div>
                               <span className="text-amber-800/90">Balance</span>

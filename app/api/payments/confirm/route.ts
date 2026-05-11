@@ -23,6 +23,7 @@ import {
   ensureLockInCycleAnchorAndLoadMembershipPayments,
   monthsFromMembershipPaymentRow,
   safeSetUserLockInCycleAnchorAt,
+  sumManualLockInMonthsAfterAnchor,
   type LockInMembershipPaymentRow,
 } from "@/lib/lock-in-cycle";
 
@@ -355,33 +356,31 @@ export async function POST(request: Request) {
         const rowsAfterAnchor = fullPaidSameTierRows.filter(
           (r) => !lockInAnchor || r.paidAt.getTime() > lockInAnchor.getTime(),
         );
+        const rowsAfterAnchorExclCurrent = rowsAfterAnchor.filter((r) => r.id !== payment.id);
         const rowsExclCurrent = fullPaidSameTierRows.filter((r) => r.id !== payment.id);
         const sumMonthsExclCurrent = rowsExclCurrent.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
-        let fullPaidSameTierMonths = rowsAfterAnchor.reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
+        let fullPaidSameTierMonths = rowsAfterAnchorExclCurrent.reduce(
+          (sum, row) => sum + monthsFromMembershipPaymentRow(row),
+          0,
+        );
+        if (rowsAfterAnchor.some((r) => r.id === payment.id)) {
+          // Current row months must follow explicit payment month quantity, not gross (which may include membership fee).
+          fullPaidSameTierMonths += monthsCharged;
+        }
         let priorMonthsInCurrentCycleExclCurrent = 0;
         if (lockInTemplate > 0 && member.role === "MEMBER") {
           priorMonthsInCurrentCycleExclCurrent = rowsExclCurrent
             .filter((r) => !lockInAnchor || r.paidAt.getTime() > lockInAnchor.getTime())
             .reduce((sum, row) => sum + monthsFromMembershipPaymentRow(row), 0);
-          const manualPriorInCycle = await tx.lockInManualEntry.aggregate({
+          const manualRows = await tx.lockInManualEntry.findMany({
             where: {
               userId: member.id,
-              paidAt: {
-                lt: payment.paidAt,
-                ...(lockInAnchor ? { gt: lockInAnchor } : {}),
-              },
+              paidAt: { lt: payment.paidAt },
             },
-            _sum: { paidMonths: true },
+            select: { paidMonths: true, paidAt: true },
           });
-          priorMonthsInCurrentCycleExclCurrent += Math.max(0, Math.trunc(Number(manualPriorInCycle._sum.paidMonths) || 0));
-          const manualSum = await tx.lockInManualEntry.aggregate({
-            where: {
-              userId: member.id,
-              ...(lockInAnchor ? { paidAt: { gt: lockInAnchor } } : {}),
-            },
-            _sum: { paidMonths: true },
-          });
-          fullPaidSameTierMonths += Math.max(0, Math.trunc(Number(manualSum._sum.paidMonths) || 0));
+          priorMonthsInCurrentCycleExclCurrent += sumManualLockInMonthsAfterAnchor(manualRows, lockInAnchor);
+          fullPaidSameTierMonths += sumManualLockInMonthsAfterAnchor(manualRows, lockInAnchor);
         }
         const isNewLockInCycleStart =
           lockInTemplate > 0 &&

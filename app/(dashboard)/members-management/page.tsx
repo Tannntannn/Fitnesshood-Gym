@@ -80,6 +80,7 @@ type LockInDetailData = {
     paidAt: string;
     grossAmount: unknown;
     amount: unknown;
+    paidMonths?: number;
     service: { monthlyRate: unknown; tier: string };
   }>;
   manualEntries: Array<{
@@ -318,6 +319,18 @@ function membershipContractEndIso(member: ManagedMember): string | null {
   return rosterAccessExpiryIso(member);
 }
 
+function membershipJoiningStartIso(member: ManagedMember): string | null {
+  const joined = member.membershipJoinedStart?.trim();
+  if (joined) return joined;
+  return member.createdAt ?? null;
+}
+
+function membershipJoiningEndIso(member: ManagedMember): string | null {
+  const joinedEnd = member.membershipJoinedExpiry?.trim();
+  if (joinedEnd) return joinedEnd;
+  return membershipContractEndIso(member);
+}
+
 const EDIT_MODAL_TIER_VALUES = new Set([
   "Bronze",
   "Silver",
@@ -390,12 +403,14 @@ function mmSortCompare(a: ManagedMember, b: ManagedMember, key: MmSortKey, dir: 
       break;
     }
     case "join":
-      cmp = (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      cmp =
+        (membershipJoiningStartIso(a) ? new Date(membershipJoiningStartIso(a) as string).getTime() : 0) -
+        (membershipJoiningStartIso(b) ? new Date(membershipJoiningStartIso(b) as string).getTime() : 0);
       break;
     case "membershipEnds":
       cmp =
-        (a.fullMembershipExpiry ? new Date(a.fullMembershipExpiry).getTime() : 0) -
-        (b.fullMembershipExpiry ? new Date(b.fullMembershipExpiry).getTime() : 0);
+        (membershipJoiningEndIso(a) ? new Date(membershipJoiningEndIso(a) as string).getTime() : 0) -
+        (membershipJoiningEndIso(b) ? new Date(membershipJoiningEndIso(b) as string).getTime() : 0);
       break;
     case "grace":
       cmp = (a.gracePeriodEnd ? new Date(a.gracePeriodEnd).getTime() : 0) - (b.gracePeriodEnd ? new Date(b.gracePeriodEnd).getTime() : 0);
@@ -1234,16 +1249,18 @@ export default function MembersManagementPage() {
                                 >
                                   {formatLongDate(rosterAccessExpiryIso(member))}
                                 </td>
-                                <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.createdAt)}</td>
+                                <td className="px-2.5 py-2 align-middle text-slate-700">
+                                  {formatLongDate(membershipJoiningStartIso(member))}
+                                </td>
                                 <td
                                   className="px-2.5 py-2 align-middle text-slate-700"
                                   title={
-                                    member.fullMembershipExpiry?.trim()
-                                      ? "Contract / lock-in end date"
-                                      : "Rolling access end (lock-in complete or no contract horizon)"
+                                    member.membershipJoinedExpiry?.trim()
+                                      ? "Membership joining expiry (annual fee period)"
+                                      : "Fallback: contract/access end"
                                   }
                                 >
-                                  {formatLongDate(membershipContractEndIso(member))}
+                                  {formatLongDate(membershipJoiningEndIso(member))}
                                 </td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{formatLongDate(member.gracePeriodEnd)}</td>
                                 <td className="px-2.5 py-2 align-middle text-slate-700">{member.monthlyFeeLabel?.trim() || "—"}</td>
@@ -2201,14 +2218,7 @@ export default function MembersManagementPage() {
                             ) : (
                               <ul className="divide-y divide-slate-200">
                                 {lockInDetail.paymentsInCycle.map((p) => {
-                                  const mo = Math.max(
-                                    1,
-                                    Math.trunc(
-                                      Math.round(
-                                        Number(p.grossAmount ?? p.amount ?? 0) / Number(p.service.monthlyRate) || 1,
-                                      ),
-                                    ),
-                                  );
+                                  const mo = Math.max(1, Math.trunc(Number(p.paidMonths ?? 1) || 1));
                                   return (
                                     <li
                                       key={p.id}

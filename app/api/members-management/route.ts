@@ -5,6 +5,7 @@ import { jsonNoStore } from "@/lib/http";
 import { requireAdminSession } from "@/lib/admin-auth";
 import {
   effectiveLockInAnchorForDisplay,
+  isManualEntryInActiveCycle,
   monthsFromMembershipPaymentRow,
   sumManualLockInMonthsAfterAnchor,
 } from "@/lib/lock-in-cycle";
@@ -69,7 +70,7 @@ export async function GET() {
               paidAt: true,
               grossAmount: true,
               amount: true,
-              service: { select: { tier: true, monthlyRate: true } },
+              service: { select: { tier: true, monthlyRate: true, membershipFee: true } },
             },
           })
         : [];
@@ -77,13 +78,13 @@ export async function GET() {
       memberIds.length > 0
         ? await prisma.lockInManualEntry.findMany({
             where: { userId: { in: memberIds } },
-            select: { userId: true, paidMonths: true, paidAt: true },
+            select: { userId: true, paidMonths: true, paidAt: true, createdAt: true },
           })
         : [];
-    const manualByUserId = new Map<string, Array<{ paidMonths: number; paidAt: Date }>>();
+    const manualByUserId = new Map<string, Array<{ paidMonths: number; paidAt: Date; createdAt: Date }>>();
     for (const m of manualLockRows) {
       const list = manualByUserId.get(m.userId) ?? [];
-      list.push({ paidMonths: m.paidMonths, paidAt: m.paidAt });
+      list.push({ paidMonths: m.paidMonths, paidAt: m.paidAt, createdAt: m.createdAt });
       manualByUserId.set(m.userId, list);
     }
     const lastScanRows =
@@ -158,7 +159,7 @@ export async function GET() {
           const manuals = manualByUserId.get(member.id) ?? [];
           sum += sumManualLockInMonthsAfterAnchor(manuals, anchor);
           for (const me of manuals) {
-            if (anchor && me.paidAt.getTime() <= anchor.getTime()) continue;
+            if (!isManualEntryInActiveCycle(me, anchor)) continue;
             rosterStartCandidates.push(me.paidAt);
           }
           const paid = Math.max(0, Math.min(template, sum));

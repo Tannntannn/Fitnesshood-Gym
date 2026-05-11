@@ -5,6 +5,7 @@ import { inferMembershipTier } from "@/lib/membership";
 import {
   recomputeMemberLockInFields,
   effectiveLockInAnchorForDisplay,
+  lockInTemplateMonthsFromLabel,
   monthsFromMembershipPaymentRow,
   sumManualLockInMonthsAfterAnchor,
 } from "@/lib/lock-in-cycle";
@@ -36,7 +37,8 @@ export async function GET(_: Request, { params }: Params) {
       where: { name: "Membership", tier, isActive: true },
       select: { contractMonths: true },
     });
-    const templateMonths = Math.max(0, Math.trunc(Number(svc?.contractMonths) || 0));
+    const fallbackTemplate = lockInTemplateMonthsFromLabel(user.lockInLabel);
+    const templateMonths = Math.max(0, Math.trunc(Number(svc?.contractMonths) || fallbackTemplate || 0));
     const fullTierPayments = await prisma.payment.findMany({
       where: {
         userId: params.id,
@@ -50,7 +52,7 @@ export async function GET(_: Request, { params }: Params) {
         paidAt: true,
         grossAmount: true,
         amount: true,
-        service: { select: { monthlyRate: true, tier: true } },
+        service: { select: { monthlyRate: true, membershipFee: true, tier: true } },
       },
     });
     const anchor = effectiveLockInAnchorForDisplay(
@@ -67,12 +69,17 @@ export async function GET(_: Request, { params }: Params) {
       paymentMonthsTotal += monthsFromMembershipPaymentRow(p);
     }
     const manualMonthsTotal = sumManualLockInMonthsAfterAnchor(
-      user.lockInManualEntries.map((e) => ({ paidMonths: e.paidMonths, paidAt: e.paidAt })),
+      user.lockInManualEntries.map((e) => ({ paidMonths: e.paidMonths, paidAt: e.paidAt, createdAt: e.createdAt })),
       anchor,
     );
     const paidMonthsTotal = paymentMonthsTotal + manualMonthsTotal;
     const paidMonthsCapped = templateMonths > 0 ? Math.min(templateMonths, paidMonthsTotal) : 0;
     const remainingMonths = templateMonths > 0 ? Math.max(0, templateMonths - paidMonthsCapped) : 0;
+
+    const paymentsInCycleWithMonths = paymentsInCycle.map((payment) => ({
+      ...payment,
+      paidMonths: monthsFromMembershipPaymentRow(payment),
+    }));
 
     return jsonNoStore({
       success: true,
@@ -80,7 +87,7 @@ export async function GET(_: Request, { params }: Params) {
         tier,
         templateMonths,
         anchorAt: anchor?.toISOString() ?? null,
-        paymentsInCycle,
+        paymentsInCycle: paymentsInCycleWithMonths,
         manualEntries: user.lockInManualEntries,
         paymentMonthsTotal,
         manualMonthsTotal,
