@@ -198,14 +198,27 @@ export async function PATCH(request: Request, { params }: Params) {
         lockInCycleAnchorPatch = body.lockInCycleAnchorAt ? new Date(body.lockInCycleAnchorAt) : null;
       }
 
+      const DEFAULT_MEMBER_TIER = "Silver";
       let roleChangedTo: UserRole | null = null;
       if (body.role) {
-        data.role = body.role;
-        roleChangedTo = body.role;
+        const roleIsChanging = body.role !== existing.role;
+        if (roleIsChanging) {
+          const targetNeedsEmail = body.role === "MEMBER" || body.role === "NON_MEMBER";
+          if (targetNeedsEmail && !String(existing.email ?? "").trim()) {
+            throw new Error("Email is required for member and non-member roles.");
+          }
+        }
 
-        // Enforce email requirement on role change.
-        if (!((data.email as string | null | undefined) ?? existing.email)) {
-          throw new Error("Email is required.");
+        data.role = body.role;
+        roleChangedTo = roleIsChanging ? body.role : null;
+
+        // All Users lists MEMBER + Bronze under Non-Members; promoting to MEMBER must use a paid tier
+        // or the user appears to stay in the non-member column after refresh.
+        if (body.role === "MEMBER" && roleIsChanging) {
+          const tier = (existing.membershipTier ?? "").trim().toLowerCase();
+          if (!tier || tier === "bronze") {
+            data.membershipTier = DEFAULT_MEMBER_TIER;
+          }
         }
 
         // Non-members and walk-ins should not carry membership dates.
@@ -221,7 +234,7 @@ export async function PATCH(request: Request, { params }: Params) {
           data.monthlyExpiryDate = null;
           data.daysLeft = null;
           data.membershipStatus = null;
-          data.monthsPaid = null;
+          data.monthsPaid = 0;
           data.remainingMonths = null;
           data.totalContractPrice = null;
           data.remainingBalance = null;
